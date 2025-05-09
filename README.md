@@ -1,2 +1,70 @@
-# GX20-PW3335-Data-Collection
-YOKOGAWA GX20 paperless recorder data collect and calculate
+# SAMPO GX20/PW3335 Data Collection
+
+本專案旨在透過 Python 實現對 YOKOGAWA GX20 無紙記錄儀與 GW Instek PW3335 功率計的數據收集與處理功能。
+
+## 功能概述
+
+1. **數據收集**
+   - 從 GX20 獲取溫度數據。
+   - 從 PW3335 獲取電壓、電流、功率數據。
+
+2. **數據處理**
+   - 繪製溫度與功率的實時圖表。
+   - 儲存數據到 CSV 檔案。
+   - 支援多工位數據收集與處理。
+
+3. **報表功能**
+   - 計算平均值、標準差、能耗等關鍵指標。
+   - 生成數據分析報告。
+
+4. **多工位支持**
+   - 同時支持多達 6 個工位數據收集與處理。
+
+## 使用技術
+
+- **語言**: Python
+- **視覺化**: Matplotlib
+- **GUI**: Tkinter
+- **數據處理**: Pandas
+
+## 依賴項目
+
+在使用前，請確保安裝以下 Python 套件：
+
+```bash
+pip install matplotlib pandas
+
+啟動應用後，進入主界面。
+根據需求設置數據儲存路徑和頻道選擇。
+點擊 Start 開始數據收集，停止時點擊 Stop。
+數據結構
+GX20 數據格式
+每個頻道數據包含：
+資料狀態: N/B
+頻道號碼: e.g., 0001, 0101
+單位: e.g., °C
+數值: 科學記號表示法 (e.g., +110.14E+0)
+PW3335 數據格式
+包含以下參數：
+電壓 (U): V
+電流 (I): A
+功率 (P): W
+累積功率 (WP): Wh
+報告功能
+計算內容：
+溫度數據:
+平均值
+標準差
+電力數據:
+平均功耗
+啟停周期次數
+24 小時功耗推算
+注意事項
+LOG 文件
+
+所有操作與錯誤記錄會被寫入 Gx20_Pw3335.log。
+
+GX20 記錄儀與 PW3335 功率計需正確連線並配置 IP 地址。
+開發者資訊
+作者: kalapontsai
+聯絡方式: kalapontsai@gmail.com
