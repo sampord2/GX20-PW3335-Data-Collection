@@ -1,17 +1,17 @@
-# SAMPO GX20/GX30/PW3335 Data Collection 0_1
+# SAMPO RD2 LAB Data Collection
 #-------------------------------------------------------------------------------
 #GX20 info: Yokogawa GX20 Paperless Recorder
 #       document : IM04L51B01-17EN 
 #PW3335 info : GW Instek PW3335 Programmable DC Power Meter
 #       document : PW_Communicator_zh / 2018 年1月出版 (改定1.60版)
 #-------------------------------------------------------------------------------
-#Rev 1_0 2025/5/6 紀錄GX20與PW3335數據
+#Rev 1_0 2025/5/14 重新編寫
 #         1. 讀取GX20的溫度數據
 #         2. 讀取PW3335的電壓/電流/功率數據
 #         3. 繪製溫度與功率的圖表
 #         4. 儲存數據到CSV檔案
 #         5. 支援多工位數據收集,計算等功能
-#Rev 1_1 2025/5/7 修正報告功能,新增能耗參數進行計算
+#         6. 可設定Debug模式下,離線以模擬數據操作
 #-------------------------------------------------------------------------------
 import socket
 import time
@@ -20,18 +20,26 @@ from tkinter import ttk, filedialog, messagebox  # 修正：添加 messagebox �
 import csv
 from datetime import datetime, timedelta  # 修正：添加 timedelta 的導入
 import pandas as pd  # 修正：添加 pandas 的導入
+import numpy as np
 import threading
 import os,sys
-from ctypes import windll
+import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 from matplotlib import rcParams
+from matplotlib.figure import Figure
+from matplotlib.animation import FuncAnimation
+from matplotlib.font_manager import FontProperties
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+from matplotlib.backends._backend_tk import NavigationToolbar2Tk
 import tkinter.font as tkfont
 import matplotlib.dates as mdates
-
 import tempfile
+
+# Set matplotlib default font to Microsoft JhengHei for CJK support
+plt.rcParams['font.family'] = 'Microsoft JhengHei'
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+Debug_mode = True  # 設定為 True 以啟用除錯模式
 
 # 確保 LOG 檔案儲存到執行檔所在目錄或臨時目錄
 if getattr(sys, 'frozen', False):  # 如果是 pyinstaller 打包的執行檔
@@ -45,24 +53,14 @@ LOG_PATH = os.path.join(APP_DIR, "Gx20_Pw3335.log")
 if not os.access(APP_DIR, os.W_OK):
     LOG_PATH = os.path.join(tempfile.gettempdir(), "Gx20_Pw3335.log")
 
-# 設定 matplotlib 使用的字體
-rcParams['font.sans-serif'] = ['Microsoft JhengHei']  # 使用微軟正黑體
-rcParams['axes.unicode_minus'] = False  # 解決負號無法顯示的問題
-rcParams['font.size'] = 10  # 直接指定matplotlib全局字體大小
-rcParams['axes.titlesize'] = 12      # 座標軸標題字體大小
-rcParams['axes.labelsize'] = 12      # 座標軸標籤字體大小
-rcParams['xtick.labelsize'] = 12     # X軸刻度字體大小
-rcParams['ytick.labelsize'] = 12     # Y軸刻度字體大小
-rcParams['legend.fontsize'] = 10     # 圖例字體大小
-rcParams['figure.titlesize'] = 16    # 圖形標題字體大小
-
-def log_to_file(message):
+def log_to_file(message): 
     """將訊息寫入 LOG 檔案"""
     try:
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(message + "\n")
     except Exception as e:
         print(f"無法寫入 LOG 檔案: {e}")
+
 def log_error(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"[ERROR] {timestamp} - {message}"
@@ -77,9 +75,26 @@ def log_info(message):
 
 class GX20:
     def __init__(self, host="192.168.1.1", port=34434):
-        self.valid_data = {}  # 有效數據
         self.gsRemoteHost = host
         self.gnRemotePort = port
+        # 新增：儲存各工位的頻道對應
+        #channel_number = {station_name: {}}
+        self.channel_number = {
+            "工位1": ["0001","0002","0003","0004","0005","0006","0007","0008","0009","0010","0101","0102","0103","0104","0105","0106","0107","0108","0109","0110"],
+            "工位2": ["0201","0202","0203","0204","0205","0206","0207","0208","0209","0210","0301","0302","0303","0304","0305","0306","0307","0308","0309","0310"],
+            "工位3": ["0401","0402","0403","0404","0405","0406","0407","0408","0409","0410","1001","1002","1003","1004","1005","1006","1007","1008","1009","1010"],
+            "工位4": ["0701","0702","0703","0704","0705","0706","0707","0708","0709","0710","0801","0802","0803","0804","0805","0806","0807","0808","0809","0810"],
+            "工位5": ["0501","0502","0503","0504","0505","0506","0507","0508","0509","0510","0601","0602","0603","0604","0605","0606","0607","0608","0609","0610"],
+            "工位6": ["1101","1102","1103","1104","1105","1106","1107","1108","1109","1110","1201","1202","1203","1204","1205","1206","1207","1208","1209","1210"]
+        }
+        self.channels_temp = {
+            "工位1": [0.0] * 20,
+            "工位2": [0.0] * 20,
+            "工位3": [0.0] * 20,
+            "工位4": [0.0] * 20,
+            "工位5": [0.0] * 20,
+            "工位6": [0.0] * 20
+        }
 
     def parse_scientific_notation(self, value_str):
         """解析科學記號格式的數值，非數字或大於999時回傳 None"""
@@ -130,25 +145,35 @@ class GX20:
                 data = s.recv(10240).decode("ascii", errors="ignore")
                 #print("Raw data:", repr(data))
                 
-                # 初始化數據字典
-                self.valid_data = {}
-                
-                # 解析每一行數據
-                lines = data.split('\r\n')
-                # 從第5筆開始處理頻道數據
-                for line in lines[4:]:
-                    if len(line) == 31:  # 確保是頻道數據行
-                        #print(line)
-                        parsed = self.parse_channel_data(line)
-                            # 解析數值
-                        value = self.parse_scientific_notation(parsed["value_str"])
-                        self.valid_data[parsed["channel"]] = {
-                            "value": value,
-                            "unit": parsed["unit"]
-                        }
-                
+                # 將資料放入channel_temp
+                for line in data.splitlines():
+                    parsed_data = self.parse_channel_data(line)
+                    if parsed_data:
+                        channel = parsed_data["channel"]
+                        value_str = parsed_data["value_str"]
+                        value = self.parse_scientific_notation(value_str)
+                        if value is not None:
+                            # 將值存入 channel_temp
+                            for station_name, channels in self.channel_number.items():
+                                if channel in channels:
+                                    index = channels.index(channel)
+                                    self.channels_temp[station_name][index] = round(value, 1)
+                                    break
+                        else:
+                            # 如果值無效，則將對應的 channel_temp 設為 None
+                            for station_name, channels in self.channel_number.items():
+                                if channel in channels:
+                                    index = channels.index(channel)
+                                    self.channels_temp[station_name][index] = 99.9
+                                    break
+                #print(f"GX20 channels_temp: {self.channels_temp['工位1']}")
         except Exception as e:
-            self.valid_data = {"Error": f"Error-Code: {str(e)}"}
+            print(f"GX20 connection error: {e}")
+            log_error(f"GX20 connection error: {e}")
+            self.valid_data = {}
+            return None
+
+        return self.channels_temp
 
     def decode_temperature(self, channels: list[str]) -> list[float]:
         """
@@ -159,6 +184,10 @@ class GX20:
             for ch in channels
         ]
 
+    def parse_channels_number(self, station_name, checkbox_index):
+        #從 channel_number 找出 station_name 對應的號碼字串
+        return self.channel_number[station_name][checkbox_index]
+    
 class PW3335:
     def __init__(self, ip_address, port=3300):
         self.ip_address = ip_address
@@ -175,6 +204,10 @@ class PW3335:
         if self.sock:
             self.sock.close()
             self.sock = None
+
+    def parse_measurement(self, value_str):
+        """Parse a measurement string and return its numeric value."""
+        return float(value_str.split()[1])
 
     def query_data(self):
         """Query voltage, current, power, and accumulated power."""
@@ -228,7 +261,7 @@ class EnergyCalculator:
         return[ threshold_lv1, threshold_lv2, threshold_lv3, threshold_lv4 ]
 
 
-    def calculate(self, VF, VR, daily_consumption, fridge_temp, freezer_temp, fan_type):
+    def calculate(self, VF, VR, daily_consumption, freezer_temp, fridge_temp, fan_type):
         """
         計算冰箱能耗相關指標
         
@@ -245,6 +278,7 @@ class EnergyCalculator:
         results = {}
         
         # 1. 計算K值 (溫度係數)
+        print(f"冷凍室溫度: {freezer_temp}, 冷藏室溫度: {fridge_temp}")
         K = self.calculate_K_value(freezer_temp, fridge_temp)
         #print(f"K值: {K}")
         # 2. 計算等效內容積
@@ -285,6 +319,8 @@ class EnergyCalculator:
         
         # 整理所有結果
         results.update({
+            '冷凍室溫度': freezer_temp,
+            '冷藏室溫度': fridge_temp,
             'K值': K,
             'VF(L)': VF,
             'VR(L)': VR,
@@ -307,7 +343,7 @@ class EnergyCalculator:
     def calculate_K_value(self, freezer_temp, fridge_temp):
         """計算K值 (溫度係數)"""
         # 根據公式 K = (30 - 冷凍庫溫度) / (30 - 冷藏庫溫度)
-        print(f"冷凍庫溫度: {freezer_temp}, 冷藏庫溫度: {fridge_temp}")        
+        #print(f"冷凍庫溫度: {freezer_temp}, 冷藏庫溫度: {fridge_temp}")        
         return round((30 - freezer_temp) / (30 - fridge_temp), 2)
     
     def calculate_equivalent_volume(self, VR, VF, K):
@@ -411,74 +447,160 @@ class EnergyCalculator:
         
         return final_percent, grade
 
+class DraggableLine:
+    def __init__(self, ax, xdata, ydata, initial_pos, color='red', linestyle='--', linewidth=1, 
+                 date_var=None, time_var=None, on_drag_callback=None):
+        self.ax = ax
+        self.xdata = xdata
+        self.ydata = ydata
+        self.line = ax.axvline(x=initial_pos, color=color, linestyle=linestyle, linewidth=linewidth)
+        self.press = None
+        self.date_var = date_var
+        self.time_var = time_var
+        self.on_drag_callback = on_drag_callback
+        self.cid_press = self.line.figure.canvas.mpl_connect('button_press_event', self.on_press)
+        self.cid_release = self.line.figure.canvas.mpl_connect('button_release_event', self.on_release)
+        self.cid_motion = self.line.figure.canvas.mpl_connect('motion_notify_event', self.on_motion)
+        #print("date_var:", type(date_var), "time_var:", type(time_var))
+
+    def on_press(self, event):
+        if event.inaxes != self.ax:
+            return
+        contains, attrd = self.line.contains(event)
+        if not contains:
+            return
+        self.press = True
+        
+    def on_motion(self, event):
+        if not self.press or event.inaxes != self.ax:
+            return
+        x_pos = event.xdata
+        #print("拖曳到", x_pos)
+        self.line.set_xdata([x_pos, x_pos])
+        self.update_text_boxes(x_pos)
+        # 新增：呼叫 callback
+        if self.on_drag_callback:
+            self.on_drag_callback(x_pos)
+        self.line.figure.canvas.draw()
+        
+    def on_release(self, event):
+        self.press = False
+        self.line.figure.canvas.draw()
+        
+    def get_position(self):
+        return self.line.get_xdata()[0]
+        
+    def update_text_boxes(self, x_pos):
+        if self.date_var is not None and self.time_var is not None:
+            dt = mdates.num2date(x_pos)
+            self.date_var.set(dt.strftime('%Y-%m-%d'))
+            self.time_var.set(dt.strftime('%H:%M:%S'))
 
 class App:
-    def __init__(self, root):
+    def __init__(self, root, ws, hs):
+        self.font_prop = FontProperties(family="Microsoft JhengHei", size=10)
         self.root = root
-        self.root.title("SAMPO GX20/PW3335 Data Collection")  # 初始標題
-        self.file_path = ""  # 初始化 file_path 屬性
-        self.collecting = {}  # 初始化 collecting 屬性，用於跟蹤正在收集數據的設備
-        self.gx20_ip = "192.168.1.1"
-        self.gx20_instance = GX20(self.gx20_ip)
+        self.ws = ws
+        self.hs = hs
+        self.pause_plot = {}  # 用於控制圖表更新的暫停/恢復
+        self.gx20_instance = GX20()
         self.pw3335_instances = {}
-        self.time_data = []
-        self.temperature_data = []
-        self.power_data = []
-        self.pause_plot = False  # 新增變數，用於控制圖表更新的暫停/恢復
-        self.gx20_data_dict = {}  # {channel: value}
-        self.gx20_connected = False
-        self.plot_channel_labels = {}
+        self.EnergyCalculator = EnergyCalculator()
+        self.plot_channel_labels = {} #即時顯示溫度的標籤
+        self.collecting = {}
+        self.plot_data = {}
+        self.x_start = {}
+        #self.x_start = {datetime.now()}
+        self.x_end = {}
+        #self.x_end = datetime.now() - timedelta(minutes=30)
 
-        # 新增：儲存各工位的頻道對應
-        self.channel_number = {
-            "工位1": "0001-0010,0101-0110",
-            "工位2": "0201-0210,0301-0310",
-            "工位3": "0401-0410,1001-1010",
-            "工位4": "0701-0710,0801-0810",
-            "工位5": "0501-0510,0601-0610",
-            "工位6": "1101-1110,1201-1210"
-        }
+        self.collection_threads = {}
+        self.stop_events = {}  # 新增：每個工位一個 stop event
         # 為每個工位創建獨立的數據存儲
-        self.station_data = {
-            f"工位{i}": {
-                "time_data": [],
-                "temperature_data": [],
-                "power_data": [],
-            }
-            for i in range(1, 7)
-        }
-        
+        #for i in range(1, 7):
+            # 每個工位圖表的資料 [[datetime],[20個溫度的值],[4個電力值]]
+            #self.plot_data[i] = [[],[],[]]
+
         # 初始化 Notebook（頁面容器）
         self.notebook = ttk.Notebook(root)
-        self.notebook.place(x=5, y=5, width=ws-10, height=hs-10)
-
+        self.notebook.place(x=5, y=5, width=self.ws-10, height=self.hs-10)
         # 創建 6 個頁面（工位 1 到工位 6）
         self.frames = {}
         for i in range(1, 7):
             frame = ttk.Frame(self.notebook)
             self.notebook.add(frame, text=f"   工位{i}   ", padding=5)
             self.frames[f"工位{i}"] = frame
+            self.pause_plot[f"工位{i}"] = False  # 初始化每個工位的暫停狀態
+            self.x_start[f"工位{i}"] = datetime.now() - timedelta(minutes=30)  # 初始化每個工位的 x 軸起始時間
+            self.x_end[f"工位{i}"] = datetime.now()  # 初始化每個工位的 x 軸結束時間
             # 在每個頁面中添加控件
             self.setup_station_page(frame, f"工位{i}")
-
         # 綁定窗口關閉事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-
         # 啟動 GX20 連線與資料更新執緒
-        threading.Thread(target=self.gx20_data_updater, daemon=True).start()
+        threading.Thread(target=self.instant_data_updater, daemon=True).start()
 
         # 初始化 PW3335 實例
-        self.pw3335_instances = {}
-        for i in range(1, 7):
-            pw_ip = f"192.168.1.{i + 1}"
+        if not Debug_mode:
+            for i in range(1, 7):
+                pw_ip = f"192.168.1.{i + 1}"
+                try:
+                    pw = PW3335(pw_ip)
+                    pw.connect()
+                    self.pw3335_instances[pw_ip] = pw
+                except Exception as e:
+                    print(f"PW3335 {pw_ip} 連線失敗: {e}")
+                    log_error(f"App.init:PW3335 {pw_ip} 連線失敗: {e}")
+    
+    def instant_data_updater(self):
+        """持續連線GX20,儲存到self.station_data, 並即時更新各工位PLOT頁面溫度顯示"""
+        while True:
             try:
-                pw = PW3335(pw_ip)
-                pw.connect()
-                self.pw3335_instances[pw_ip] = pw
-            except Exception as e:
-                print(f"PW3335 {pw_ip} 連線失敗: {e}")
-                log_error(f"App.init:PW3335 {pw_ip} 連線失敗: {e}")
+                if not Debug_mode:
+                    self.gx20_instance.GX20GetData()
+                    # 取得溫度數據
+                    self.gx20_data_dict = self.gx20_instance.channels_temp
 
+                else:
+                    simulation_value = int(datetime.now().strftime("%S")) / 100
+                    self.simulation_wh = [0.0] * 7
+                    # 實際收集GX20數據, 只模擬電力記錄
+                    #self.gx20_instance.GX20GetData()
+                    #self.gx20_data_dict = self.gx20_instance.channels_temp
+                    # -------------------
+                    # 產生6個工位的模擬數據
+                    self.gx20_data_dict = {
+                        "工位1": [round(simulation_value + i * 0.5, 1) for i in range(20)],
+                        "工位2": [round(simulation_value + i * 0.5, 1) for i in range(20)],
+                        "工位3": [round(simulation_value + i * 0.5, 1) for i in range(20)],
+                        "工位4": [round(simulation_value + i * 0.5, 1) for i in range(20)],
+                        "工位5": [round(simulation_value + i * 0.5, 1) for i in range(20)],
+                        "工位6": [round(simulation_value + i * 0.5, 1) for i in range(20)]
+                    }
+
+                # 依照每個工位的頻道設定，更新溫度顯示
+                for i in range(1, 7):
+                    station_name = f"工位{i}"
+                    if not self.pause_plot[station_name]:
+                        """更新 PLOT 頁面的頻道讀值顯示"""
+                        if station_name not in self.plot_channel_labels:
+                            return
+                        temp_list = self.gx20_data_dict[station_name]
+                        
+                        # 更新每個工位的instant_temp_label
+                        for j, channel in enumerate(self.gx20_instance.channel_number[station_name]):
+                            if channel in self.plot_channel_labels[station_name]:
+                                label = self.plot_channel_labels[station_name][channel]
+                                if label :
+                                    if temp_list[j] != 99.9:
+                                        label.config(text=f"{temp_list[j]}")
+                                    else:
+                                        label.config(text=f"--")
+                    #print(f"即時溫度{station_name}: {self.gx20_data_dict[station_name]}")
+
+            except Exception as e:
+                self.show_error_dialog(f"GX20連線錯誤:", str(e))
+            time.sleep(5)  # 每5秒更新一次數據
 
     def setup_station_page(self, frame, station_name):
         """設置每個工位頁面的控件"""
@@ -489,76 +611,116 @@ class App:
         station_notebook.grid(row=0, column=0, sticky="nsew")
         
         # 創建四個子頁面
-        file_frame = ttk.Frame(station_notebook)
-        channel_frame = ttk.Frame(station_notebook)
+        parameter_frame = ttk.Frame(station_notebook)
         plot_frame = ttk.Frame(station_notebook)
-        report_frame = ttk.Frame(station_notebook)
+        snapshot_frame = ttk.Frame(station_notebook)
         
         # 將子頁面加入 Notebook
-        station_notebook.add(file_frame, text="  FILE  ")
-        station_notebook.add(channel_frame, text="  CHANNEL  ")
-        station_notebook.add(plot_frame, text="  PLOT  ")
-        station_notebook.add(report_frame, text="  REPORT  ")
+        station_notebook.add(parameter_frame, text="  設定  ")
+        station_notebook.add(plot_frame, text="  圖表  ")
+        station_notebook.add(snapshot_frame, text="  計算  ")
         
         # 設置 frame 的網格權重，使其可以填滿整個空間
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
         
         # 在各個子頁面中設置控件
-        self.setup_file_page(file_frame, station_name)
-        self.setup_channel_page(channel_frame, station_name)
+        self.setup_parameter_page(parameter_frame, station_name)
         self.setup_plot_page(plot_frame, station_name)
-        self.setup_report_page(report_frame, station_name)
+        self.setup_snapshot_page(snapshot_frame, station_name)
 
-    def setup_file_page(self, frame, station_name):
-        """設置 FILE 頁面的控件"""
-        # File path selection
-        ttk.Label(frame, text="儲存路徑:").grid(row=0, column=0, padx=5, pady=5)
-        file_path_var = tk.StringVar(value="D:/sampo")  # 設定預設路徑
-        file_path_entry = ttk.Entry(frame, textvariable=file_path_var, width=30)
-        file_path_entry.grid(row=0, column=1, padx=5, pady=5)
-        browse_button = ttk.Button(frame, text="Browse", command=lambda: self.browse_file(file_path_var))
-        browse_button.grid(row=0, column=2, padx=5, pady=5)
+    def setup_parameter_page(self, frame, station_name):
+        """設置 參數 頁面的控件"""
+        # 檔案框架
+        file_frame = ttk.LabelFrame(frame, text="檔案設定")
+        file_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        if file_frame:
+            # File path selection
+            ttk.Label(file_frame, text="儲存路徑:").grid(row=0, column=0, padx=5, pady=5)
+            file_path_var = tk.StringVar(value="D:/測試紀錄")  # 設定預設路徑
+            file_path_entry = ttk.Entry(file_frame, textvariable=file_path_var, width=30)
+            file_path_entry.grid(row=0, column=1, padx=5, pady=5)
+            browse_button = ttk.Button(file_frame, text="Browse", command=lambda: self.browse_file(file_path_var))
+            browse_button.grid(row=0, column=2, padx=5, pady=5)
 
-        ttk.Label(frame, text="檔名:").grid(row=1, column=0, padx=5, pady=5)
-        file_name_var = tk.StringVar(value="*.csv") 
-        file_name_entry = ttk.Entry(frame, textvariable=file_name_var, width=30, state="readonly")
-        file_name_entry.grid(row=1, column=1, padx=5, pady=5)
+            ttk.Label(file_frame, text="檔名:").grid(row=1, column=0, padx=5, pady=5)
+            file_name_var = tk.StringVar(value="*.csv") 
+            file_name_entry = ttk.Entry(file_frame, textvariable=file_name_var, width=30, state="readonly")
+            file_name_entry.grid(row=1, column=1, padx=5, pady=5)
 
-        # Frequency selection
-        ttk.Label(frame, text="記錄頻率(sec):").grid(row=2, column=0, padx=5, pady=5)
-        frequency_var = tk.IntVar(value=10)
-        frequency_menu = ttk.Combobox(frame, textvariable=frequency_var, state="readonly")
-        frequency_menu['values'] = [10, 60, 180, 300]
-        frequency_menu.grid(row=2, column=1, padx=5, pady=5)
+            # Frequency selection
+            ttk.Label(file_frame, text="記錄頻率(sec):").grid(row=2, column=0, padx=5, pady=5)
+            frequency_var = tk.IntVar(value=10)
+            frequency_menu = ttk.Combobox(file_frame, textvariable=frequency_var, state="readonly")
+            frequency_menu['values'] = [10, 60, 180, 300]
+            frequency_menu.grid(row=2, column=1, padx=5, pady=5)
 
-        # Start, Stop buttons
-        start_button = ttk.Button(frame, text="Start", command=lambda: self.start_collection(station_name), state="normal")
-        start_button.grid(row=1, column=2, padx=5, pady=5)
-        stop_button = ttk.Button(frame, text="Stop", command=lambda: self.stop_collection(station_name), state="disabled")
-        stop_button.grid(row=2, column=2, padx=5, pady=5)
+            # Start, Stop buttons
+            start_button = ttk.Button(file_frame, text="Start", command=lambda: self.start_collect(station_name), state="normal")
+            start_button.grid(row=1, column=2, padx=5, pady=5)
+            stop_button = ttk.Button(file_frame, text="Stop", command=lambda: self.stop_collect(station_name), state="disabled")
+            stop_button.grid(row=2, column=2, padx=5, pady=5)
 
         # 分割線
-        ttk.Separator(frame, orient="horizontal").grid(row=3, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Separator(frame, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=10)
+        
+        # 機種框架
+        prod_frame = ttk.LabelFrame(frame, text="機種資料")
+        prod_frame.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
+        # 設置行列權重
+        #frame.grid_rowconfigure(1, weight=1)
+        if prod_frame:
+            # 新增一個frame,設定冰箱規格
+            ttk.Label(prod_frame, text="機種:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+            model_entry_var = tk.StringVar(value="NA")
+            model_entry = ttk.Entry(prod_frame, width=30, textvariable=model_entry_var)
+            model_entry.grid(row=0, column=1, padx=5, pady=5)
+            ttk.Label(prod_frame, text="冷凍庫容量(L):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+            vf_entry_var = tk.StringVar(value="150")
+            vf_entry = ttk.Entry(prod_frame, width=10, textvariable=vf_entry_var)
+            vf_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+            ttk.Label(prod_frame, text="冷藏庫容量:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+            vr_entry_var = tk.StringVar(value="350")
+            vr_entry = ttk.Entry(prod_frame, width=10, textvariable=vr_entry_var)
+            vr_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+            # Fan type checkbox
+            fan_type_var = tk.IntVar(value=1)  # 0: unchecked, 1: checked
+            fan_type_checkbox = ttk.Checkbutton(prod_frame, text="風扇式", variable=fan_type_var)
+            fan_type_checkbox.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky="w")
 
-        # 新增一個frame,設定冰箱規格
-        ttk.Label(frame, text="冰箱規格:").grid(row=4, column=0, padx=5, pady=5)
-        ttk.Label(frame, text="機種:").grid(row=5, column=0, padx=5, pady=5, sticky="w")
-        model_entry_var = tk.StringVar(value="NA")
-        model_entry = ttk.Entry(frame, width=30, textvariable=model_entry_var)
-        model_entry.grid(row=5, column=1, padx=5, pady=5)
-        ttk.Label(frame, text="冷凍庫容量(L):").grid(row=6, column=0, padx=5, pady=5, sticky="w")
-        vf_entry_var = tk.StringVar(value="150")
-        vf_entry = ttk.Entry(frame, width=10, textvariable=vf_entry_var)
-        vf_entry.grid(row=6, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(frame, text="冷藏庫容量:").grid(row=7, column=0, padx=5, pady=5, sticky="w")
-        vr_entry_var = tk.StringVar(value="350")
-        vr_entry = ttk.Entry(frame, width=10, textvariable=vr_entry_var)
-        vr_entry.grid(row=7, column=1, padx=5, pady=5, sticky="w")
-        # Fan type checkbox
-        fan_type_var = tk.IntVar(value=1)  # 0: unchecked, 1: checked
-        fan_type_checkbox = ttk.Checkbutton(frame, text="風扇式", variable=fan_type_var)
-        fan_type_checkbox.grid(row=8, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+
+        # 頻道框架
+        channel_check = []
+        ch_aliases = []
+        channel_frame = ttk.LabelFrame(frame, text="頻道設定")
+        channel_frame.grid(row=0, column=1, padx=20, pady=5, sticky="nw")
+        if channel_frame:
+            # GX20 channel switch
+            for i in range(20):
+                # 計算行(row)與列(column)位置
+                if i < 10:
+                    row = i
+                    col = 0
+                else:
+                    row = i - 10
+                    col = 3  # 第二列從第4欄開始（0,1,2,3...）
+                # 勾選框
+                channel_check_var = tk.IntVar(value=0)
+                #channel_check_var.set(0)  # 預設為未勾選
+                channel_checkbox = ttk.Checkbutton(channel_frame, variable=channel_check_var)
+                channel_checkbox.grid(row=row, column=col, padx=2)
+                channel_check.append(channel_check_var)
+
+                ch_label = ttk.Label(channel_frame, text=i+1, width=3, anchor="center")
+                ch_label.grid(row=row, column=col + 1, padx=5, pady=5)
+
+                # 別名輸入框
+                alias_entry = ttk.Entry(channel_frame, width=8)
+                alias_entry.grid(row=row, column=col + 2, padx=2, sticky='ew')
+                ch_aliases.append(alias_entry)
+
+
+
 
         # Save references
         setattr(self, f"{station_name}_file_path_var", file_path_var)
@@ -578,200 +740,316 @@ class App:
         setattr(self, f"{station_name}_vr_entry_var", vr_entry_var)
         setattr(self, f"{station_name}_fan_type_var", fan_type_var)
         setattr(self, f"{station_name}_fan_type_checkbox", fan_type_checkbox)
+        setattr(self, f"{station_name}_channel_check", channel_check)
+        setattr(self, f"{station_name}_ch_aliases", ch_aliases)
+
+    def get_enabled_channel(self, station_name):
+        """將頻道設定的勾選狀態與別名輸出"""
+        # 獲取頻道設定的勾選狀態與別名
+        channel_check = getattr(self, f"{station_name}_channel_check")
+        ch_aliases = getattr(self, f"{station_name}_ch_aliases")
+        enabled_channels = []
+        for i in range(20):
+            if channel_check[i].get() == 1:
+                #print(f"{station_name} - Channel {i+1} alias : {ch_aliases[i].get()}")
+                #print(f"頻道號碼: {self.gx20_instance.parse_channels_number(station_name, i)}")
+                enabled_channels.append([i, ch_aliases[i].get(),self.gx20_instance.parse_channels_number(station_name, i)])  
+        #print(f"{station_name} - Enabled Channels: {enabled_channels}")
+        #工位1 - Enabled Channels: [[4, '', '0005'], [12, 'fn', '0103'], [14, 'fgnfgnvb', '0105']]
+        return enabled_channels
 
     def browse_file(self, file_path_var):
         file_path = filedialog.askdirectory()
         file_path_var.set(file_path)
         self.file_path = file_path  # 將選擇的路徑保存到 self.file_path
 
-    def setup_channel_page(self, frame, station_name):
-        """設置 CHANNEL 頁面的控件"""
-        # 頻道設定標題
-        ttk.Label(frame, text="頻道設定").grid(row=0, column=0, columnspan=6, pady=5)  # 改為6欄
+    def start_collect(self,station_name):
+        try:
+            # 清除舊數據
+            self.plot_data[station_name] = []
+            # 檢查檔案路徑
+            file_path_var = getattr(self, f"{station_name}_file_path_var", None)
+            if not file_path_var or not file_path_var.get():
+                self.show_error_dialog("路徑錯誤", "請先選擇儲存路徑")
+                return
+            self.file_path = file_path_var.get()
 
-        # 按鈕框架
-        button_frame = ttk.Frame(frame)
-        button_frame.grid(row=1, column=0, columnspan=6, pady=5)  # 改為6欄
+            # **檢查至少有一個頻道被勾選**
+            if len(self.get_enabled_channel(station_name)) < 1:
+                self.show_error_dialog("頻道選擇錯誤", "請至少勾選一個頻道！")
+                return
+            
+            #log_info(f"{station_name}勾選頻道: {self.get_enabled_channel(station_name)}")
+            #print(f"{station_name}勾選頻道:{self.get_enabled_channel(station_name)}")
+            
+            # 啟用 stop 按鈕，禁用 start 按鈕
+            start_button = getattr(self, f"{station_name}_start_button", None)
+            stop_button = getattr(self, f"{station_name}_stop_button", None)
+            pause_button = getattr(self, f"{station_name}_pause_button", None)
+            if start_button:
+                start_button.config(state="disabled")
+            if stop_button:
+                stop_button.config(state="normal")
+            if pause_button:
+                pause_button.config(state="normal")
+            # 禁止改變file_path_entry
+            file_path_entry = getattr(self, f"{station_name}_file_path_entry", None)
+            if file_path_entry:
+                file_path_entry.config(state="readonly")
+            # 禁用 brwose_button
+            browse_button = getattr(self, f"{station_name}_Browse_button", None)
+            if browse_button:
+                browse_button.config(state="disabled")
+            # 禁用 frequency_menu
+            frequency_menu = getattr(self, f"{station_name}_frequency_menu", None)
+            if frequency_menu:
+                frequency_menu.config(state="disabled")
+            
+            # 確保圖表初始化
+            ax_temp = getattr(self, f"{station_name}_ax_temp", None)
+            ax_power = getattr(self, f"{station_name}_ax_power", None)
+            if ax_temp and ax_power:
+                ax_temp.clear()
+                ax_power.clear()
 
-        select_all_btn = ttk.Button(
-            button_frame, 
-            text="全選", 
-            command=lambda: self.update_all_checkboxes(station_name, True)
-        )
-        select_all_btn.grid(row=0, column=0, padx=5)
+            # 設置收集狀態
+            self.collecting[station_name] = True
+            self.stop_events[station_name] = threading.Event()
 
-        deselect_all_btn = ttk.Button(
-            button_frame, 
-            text="全取消", 
-            command=lambda: self.update_all_checkboxes(station_name, False)
-        )
-        deselect_all_btn.grid(row=0, column=1, padx=5)
+            # 頁籤加上 []
+            for idx in range(self.notebook.index("end")):
+                tab_text = self.notebook.tab(idx, "text").replace(" ", "")
+                if tab_text == station_name:
+                    self.notebook.tab(idx, text=f"[{tab_text}]")
+                    break
+            
+            # 取得工位對應的頻道和 IP
+            station_index = int(station_name[-1]) - 1
+            pw_ip = f"192.168.1.{station_index + 2}"
 
-        # 頻道列表 (10行，每行6個元件)
-        channels = self.parse_channels(self.channel_number[station_name])
-        checkboxes = {}
-        ch_aliases = {}
+            # 啟動數據收集執行緒
+            collection_thread = threading.Thread(
+                target=self.collect_data,
+                args=(station_name, pw_ip), # ← 這裡加逗號，確保是 tuple
+                daemon=True
+            )
+            self.collection_threads[station_name] = collection_thread
+            collection_thread.start()
+            log_info(f"{station_name} 開始收集數據")
+            #print(f"{station_name} 開始收集數據")
 
-        for i in range(10):  # 10 行
-            row = i + 2  # 從第2行開始
+        except Exception as e:
+            print(f"Error in start_collect: {e}")
+            log_error(f"Error in start_collect: {e}")
+            self.stop_collect(station_name)
 
-            # 左側 CH01-CH10
-            ch_num_left = channels[i] if i < len(channels) else None
-            if ch_num_left:
-                # 左側頻道號碼
-                ttk.Label(frame, text=f"{ch_num_left}").grid(
-                    row=row, 
-                    column=0, 
-                    padx=2, 
-                    sticky='e'
-                )
+    def stop_collect(self,station_name):
+        """停止指定工位的數據收集"""
+        try:
+            self.collecting[station_name] = False
+            if station_name in self.stop_events:
+                self.stop_events[station_name].set()
+            # 頁籤移除 []
+            for idx in range(self.notebook.index("end")):
+                tab_text = self.notebook.tab(idx, "text")
+                if tab_text.replace("[", "").replace("]", "").replace(" ", "") == station_name:
+                    self.notebook.tab(idx, text=station_name)
+                    break
+            
+            # 啟用 start 按鈕，禁用 stop 按鈕和 pause 按鈕
+            start_button = getattr(self, f"{station_name}_start_button", None)
+            stop_button = getattr(self, f"{station_name}_stop_button", None)
+            pause_button = getattr(self, f"{station_name}_pause_button", None)
+            if start_button:
+                start_button.config(state="normal")
+            if stop_button:
+                stop_button.config(state="disabled")
+            if pause_button:
+                pause_button.config(state="disabled")
+                pause_button.config(text="暫停")  # 重設暫停按鈕文字
+            # 開放file_path_entry
+            file_path_entry = getattr(self, f"{station_name}_file_path_entry", None)
+            if file_path_entry:
+                file_path_entry.config(state="normal")
+            # 開放 browse_button
+            browse_button = getattr(self, f"{station_name}_Browse_button", None)
+            if browse_button:
+                browse_button.config(state="normal")
+            # 開放 frequency_menu
+            frequency_menu = getattr(self, f"{station_name}_frequency_menu", None)
+            if frequency_menu:
+                frequency_menu.config(state="enabled")
+            
+            # 重設暫停狀態
+            self.pause_plot[station_name] = False
+            log_info(f"{station_name} 停止收集數據")
 
-                # 左側 Checkbox
-                var_left = tk.IntVar(value=1)
-                checkbox_left = ttk.Checkbutton(frame, variable=var_left)
-                checkbox_left.grid(row=row, column=1, padx=2)
-                checkboxes[ch_num_left] = var_left
+            # 將collection_thread結束
+            self.collecting[station_name] = False
+            thread = self.collection_threads.get(station_name)
+            if thread and thread.is_alive():
+                thread.join(timeout=2)
+                if thread.is_alive():
+                    print(f"{station_name} 的數據收集執行緒無法正常結束")
+        except Exception as e:
+            print(f"Error in stop_collect: {e}")
+            log_error(f"Error in stop_collect: {e}")
 
-                # 左側別名輸入框
-                alias_entry_left = ttk.Entry(frame, width=8)
-                alias_entry_left.grid(row=row, column=2, padx=2, sticky='ew')
-                ch_aliases[ch_num_left] = alias_entry_left
+    def collect_data(self,station_name, pw_ip):
+        freq = getattr(self, f"{station_name}_frequency_var", None)
+        file_name_entry = getattr(self, f"{station_name}_file_name_entry", None)
+        file_path_var = getattr(self, f"{station_name}_file_path_var", None)
+        frequency_var = freq.get() if freq else 10
+        try:
+            if not Debug_mode:
+                # 檢查 PW3335 連線
+                pw = self.pw3335_instances.get(pw_ip)
+                if not pw:
+                    try:
+                        pw = PW3335(pw_ip)
+                        pw.connect()
+                        self.pw3335_instances[pw_ip] = pw
+                    except Exception as e:
+                        self.show_error_dialog("設備錯誤", f"{station_name} 的 PW3335 未連線")
+                        return
 
-            # 右側 CH11-CH20
-            ch_num_right = channels[i + 10] if i + 10 < len(channels) else None
-            if ch_num_right:
-                # 右側頻道號碼
-                ttk.Label(frame, text=f"{ch_num_right}").grid(
-                    row=row, 
-                    column=3, 
-                    padx=2, 
-                    sticky='e'
-                )
+            
+            if file_path_var:
+                file_path = file_path_var.get()
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                file_name = f"{file_path}/{timestamp}_{station_name}.csv"
+                if file_name_entry is not None:
+                    file_name_entry.config(state="normal")
+                    file_name_entry.delete(0, tk.END)
+                    file_name_entry.insert(0, os.path.basename(file_name))
+                    file_name_entry.config(state="readonly")
+                if not os.path.exists(file_path):
+                    os.makedirs(file_path)
+                file_exists = os.path.exists(file_name)
+                with open(file_name, mode="a", newline="", buffering=1, encoding="utf-8") as file:
+                    writer = csv.writer(file)
+                    # 寫入標題行：僅在檔案不存在時
+                    if not file_exists:
+                        header = ["Date", "Time"]
+                        ch_aliases = getattr(self, f"{station_name}_ch_aliases", None)
+                        if ch_aliases:
+                            for i in range(20):
+                                if ch_aliases[i].get():
+                                    header.append(ch_aliases[i].get())
+                                else:
+                                    header.append(f"Ch{i+1}")
+                        header.extend(["U(V)", "I(A)", "P(W)", "WP(Wh)"])
+                        writer.writerow(header)
 
-                # 右側 Checkbox
-                var_right = tk.IntVar(value=1)
-                checkbox_right = ttk.Checkbutton(frame, variable=var_right)
-                checkbox_right.grid(row=row, column=4, padx=2)
-                checkboxes[ch_num_right] = var_right
+                    while self.collecting[station_name]:
+                        frequency_var = int(frequency_var)
+                        active_ch_list = self.get_enabled_channel(station_name)
+                        now = datetime.now()
+                        # 將 99.9 轉為 None
+                        temp_data = [
+                            None if v == 99.9 else v
+                            for v in self.gx20_data_dict[station_name]
+                        ]
 
-                # 右側別名輸入框
-                alias_entry_right = ttk.Entry(frame, width=8)
-                alias_entry_right.grid(row=row, column=5, padx=2, sticky='ew')
-                ch_aliases[ch_num_right] = alias_entry_right
+                        if not Debug_mode:
+                            power_data = [None] * 4
+                            try:
+                                power_data = pw.query_data()[:4]
+                                #print(f"{station_name}即時電力: {power_data}")
+                            except Exception as e:
+                                log_error(f"collect_data.pw.query_data()發生錯誤: {e} at {pw_ip}")
+                        else:
+                            # 模擬電力數據
+                            power_data = [110.0,1,50,1.1]
 
-        # 保存引用
-        setattr(self, f"{station_name}_checkboxes", checkboxes)
-        setattr(self, f"{station_name}_ch_aliases", ch_aliases)
-    
-    def update_all_checkboxes(self, station_name, value: bool):
-        """更新指定工位的所有 checkbox 狀態
-        Args:
-            station_name: 工位名稱
-            value: True 為全選，False 為全取消
-        """
-        checkboxes = getattr(self, f"{station_name}_checkboxes", {})
-        for var in checkboxes.values():
-            var.set(1 if value else 0)
-        # 更新圖表顯示
-        #self.update_plot(station_name=station_name)  # 傳遞 station_name
+
+                        self.plot_data[station_name].append([now, temp_data, power_data])
+                        #print(f"{station_name}最新數據: {self.plot_data[station_name][-1]}")
+                        self.update_plot(None, station_name, active_ch_list)
+                        
+ 
+
+                        date_str = now.strftime("%Y-%m-%d")
+                        time_str = now.strftime("%H:%M:%S")
+                        writer.writerow([date_str, time_str] + self.gx20_data_dict[station_name] + power_data)
+                        #print(f"collect_data: plot_data{station_name}: {self.plot_data[station_name][-1]}")
+                        
+                        stop_event = self.stop_events.get(station_name)
+                        if stop_event:
+                            if stop_event.wait(timeout=frequency_var):
+                                break
+                        else:
+                            time.sleep(frequency_var)
+        except Exception as e:
+            print(f"Error in collect_data: {e}")
+            log_error(f"Error in collect_data: {e}")
+            self.stop_collect(station_name)
 
     def setup_plot_page(self, frame, station_name):
-        self.start_date = tk.StringVar()
-        self.start_time = tk.StringVar()
-        self.end_date = tk.StringVar()
-        self.end_time = tk.StringVar()
         """設置 PLOT 頁面的控件"""
+        xbar_frame = ttk.LabelFrame(frame, text=station_name)
+        xbar_frame.grid(row=0, column=0, columnspan=2, padx=20, pady=5, sticky="nw")
         # X 軸範圍選擇
-        ttk.Label(frame, text="X軸區間:", width=8).grid(row=0, column=0, padx=1, pady=5)
         x_axis_range_var = tk.StringVar(value="30min")
-        x_axis_range_menu = ttk.Combobox(frame, textvariable=x_axis_range_var, state="readonly", width=6)
+        x_axis_range_menu = ttk.Combobox(xbar_frame, textvariable=x_axis_range_var, state="readonly", width=6)
         x_axis_range_menu['values'] = ["30min", "3hrs", "12hrs", "24hrs"]
-        x_axis_range_menu.grid(row=1, column=0, padx=1, pady=5)
+        x_axis_range_menu.grid(row=0, column=0, padx=1, pady=5)
         
-        ttk.Label(frame, text=station_name, width=8).grid(row=0, column=1, padx=1, pady=5)
-
         # Pause/Resume button
-        pause_button = ttk.Button(frame, text="暫停", command=lambda: self.toggle_pause_plot(station_name), 
+        pause_button = ttk.Button(xbar_frame, text="暫停", command=lambda: self.toggle_pause_plot(station_name), 
                                 state="disabled", width=6)
-        pause_button.grid(row=2, column=0, padx=5, pady=5)
+        pause_button.grid(row=0, column=1, padx=5, pady=5)
         
-        # 設置20個頻道讀值標籤
-        channel_labels = []  # 新增：儲存當前工位的頻道標籤
-        
-        # 解析該工位的頻道設定
-        channels = self.parse_channels(self.channel_number[station_name])
-        
-        # 創建頻道標籤
-        for i, ch in enumerate(channels):
+        # 頻道框架
+        channel_frame = ttk.LabelFrame(frame, text="溫度")
+        channel_frame.grid(row=1, column=0, columnspan=2, padx=20, pady=5, sticky="nw")
+        channel_labels = {}  # 新增：儲存當前工位的頻道標籤
+        for i in range(20):
+            # 計算行(row)與列(column)位置
             if i < 10:
-                row, col = 3 + i, 0
+                row = i
+                col = 0
             else:
-                row, col = 3 + (i-10), 1
-            
-            ch_label = ttk.Label(frame, text=f"{ch}", width=4, relief="solid", anchor="center")
-            ch_label.grid(row=row, column=col, padx=0.5, pady=5)
-            channel_labels.append((ch, ch_label))  # 儲存頻道號碼和對應的標籤
-        
-        def increment_date_time(var, increment, unit):
-            try:
-                current_value = pd.to_datetime(var.get())
-                if unit == "day":
-                    new_value = current_value + pd.Timedelta(days=increment)
-                elif unit == "hour":
-                    new_value = current_value + pd.Timedelta(hours=increment)
-                var.set(new_value.strftime('%Y-%m-%d' if unit == "day" else '%H:%M'))
-            except Exception:
-                messagebox.showerror("錯誤", "無效的日期或時間格式！")
-
-        def bind_increment(widget, var, unit):
-            def on_key(event):
-                if event.state & 0x4:  # 檢查是否按下 CTRL 鍵
-                    if event.keysym == "Up":
-                        increment_date_time(var, 1, unit)
-                    elif event.keysym == "Down":
-                        increment_date_time(var, -1, unit)
-            widget.bind("<KeyPress-Up>", on_key)
-            widget.bind("<KeyPress-Down>", on_key)
-
-
-        start_date_entry = ttk.Entry(frame, textvariable=self.start_date, width=10)
-        start_date_entry.grid(row=13, column=0, padx=1, pady=1)
-        bind_increment(start_date_entry, self.start_date, "day")
-
-        start_time_entry = ttk.Entry(frame, textvariable=self.start_time, width=10)
-        start_time_entry.grid(row=14, column=0, padx=1, pady=1)
-        bind_increment(start_time_entry, self.start_time, "hour")
-
-        end_date_entry = ttk.Entry(frame, textvariable=self.end_date, width=10)
-        end_date_entry.grid(row=13, column=1, padx=1, pady=1)
-        bind_increment(end_date_entry, self.end_date, "day")
-
-        end_time_entry = ttk.Entry(frame, textvariable=self.end_time, width=10)
-        end_time_entry.grid(row=14, column=1)
-        bind_increment(end_time_entry, self.end_time, "hour")
-
-        #計算結果顯示區
-        calculate_text = tk.Text(frame, height=6, width=20, wrap="word")
-        calculate_text.grid(row=13, rowspan=2, column=2)
-        calculate_text.insert(tk.END, "計算結果顯示區\n")
-        # calculate button
-        calculate_button = ttk.Button(frame, text="平均", command=lambda: self.calculate_avg_temp(station_name), width=6)
-        calculate_button.grid(row=13, column=3)
-        # report button
-        report_button = ttk.Button(frame, text="報告", command=lambda: self.report_calculate(station_name), width=6)
-        report_button.grid(row=14, column=3)
-        
+                row = i - 10
+                col = 3  # 第二列從第4欄開始（0,1,2,3...）
+            instant_temp_label = ttk.Label(channel_frame, text=i+1, width=6, relief="solid", anchor="center")
+            instant_temp_label.grid(row=row, column=col, padx=5, pady=5)
+            cal_temp_label = ttk.Label(channel_frame, text=i+1, width=3, anchor="center")
+            cal_temp_label.grid(row=row, column=col+1, padx=5, pady=5)
+            # 用 channel number 當 key
+            channel_num = self.gx20_instance.channel_number[station_name][i]
+            channel_labels[channel_num] = instant_temp_label
         # 儲存該工位的頻道標籤
         self.plot_channel_labels[station_name] = channel_labels
+    
+        setattr(self, f"{station_name}_start_date", tk.StringVar())
+        setattr(self, f"{station_name}_start_time", tk.StringVar())
+        setattr(self, f"{station_name}_end_date", tk.StringVar())
+        setattr(self, f"{station_name}_end_time", tk.StringVar())
+        start_date_entry = ttk.Entry(frame, textvariable=getattr(self, f"{station_name}_start_date"), width=10, foreground="blue")
+        start_date_entry.grid(row=2, column=0, padx=5, pady=5)
 
-        figure = plt.Figure(figsize=(15, 7), dpi=85)
+        start_time_entry = ttk.Entry(frame, textvariable=getattr(self, f"{station_name}_start_time"), width=10, foreground="blue")
+        start_time_entry.grid(row=2, column=1, padx=5, pady=5)
+
+        end_date_entry = ttk.Entry(frame, textvariable=getattr(self, f"{station_name}_end_date"), width=10, foreground="red")
+        end_date_entry.grid(row=3, column=0, padx=5, pady=5)
+
+        end_time_entry = ttk.Entry(frame, textvariable=getattr(self, f"{station_name}_end_time"), width=10, foreground="red")
+        end_time_entry.grid(row=3, column=1, padx=5, pady=5)
+
+        # calculate button
+        calculate_button = ttk.Button(frame, text="平均", command=lambda: self.calculate_average(station_name), width=6)
+        calculate_button.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
+        figure = Figure(figsize=(16, 8), dpi=80)
+        gs = figure.add_gridspec(2, 1, height_ratios=[7, 3])  # 7:3 高度比例
         canvas = FigureCanvasTkAgg(figure, master=frame)
         canvas_widget = canvas.get_tk_widget()
-        canvas_widget.grid(row=0, rowspan= 13, column=2, columnspan=5, padx=5, pady=5)
-        ax_temp = figure.add_subplot(211, facecolor='lightcyan')
-        ax_power = figure.add_subplot(212, sharex=ax_temp, facecolor='lightyellow')
+        canvas_widget.grid(row=0, rowspan= 5, column=2, padx=5, pady=5)
+        ax_temp = figure.add_subplot(gs[0, 0], facecolor='lightcyan')
+        ax_power = figure.add_subplot(gs[1, 0], sharex=ax_temp, facecolor='lightyellow')
         # 減少左右空白
-        figure.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.10, hspace=0.30)
+        figure.subplots_adjust(left=0.035, right=0.98, top=0.95, bottom=0.05, hspace=0.1)
 
         ax_temp.set_ylabel("Temperature (°C)")
         ax_temp.get_xaxis().set_visible(False)
@@ -780,19 +1058,23 @@ class App:
         ax_power.set_ylabel("Power (W)")
         ax_power.grid(True)
 
+        # 設置 X 軸範圍
+
         # 新增：創建一個 Frame 來容納工具欄，並使用標準工具欄
         toolbar_frame = ttk.Frame(frame)
-        toolbar_frame.grid(row=0, column=2, columnspan= 6, padx=5, pady=5)
+        toolbar_frame.grid(row=5, column=2, padx=5, pady=5, sticky='wn')
         toolbar = NavigationToolbar2Tk(canvas, toolbar_frame)  # 使用標準工具欄
         #toolbar.grid(row=0, column=0)  # 在 toolbar_frame 中使用 grid
         toolbar.update()
 
         # Memo text box
-        memo_text = tk.Text(frame, height=6, width=80, wrap="word")
-        memo_text.grid(row=13, rowspan=2, column=4, padx=5, pady=5)
+        memo_text = tk.Text(frame, height=4, width=120, wrap="word")
+        memo_text.grid(row=5, column=2, padx=5, pady=5,sticky="e")
         memo_text.insert(tk.END, "備註:\n")
         
         # Save references
+        setattr(self, f"{station_name}_channel_labels", channel_labels)  # 儲存頻道標籤
+
         setattr(self, f"{station_name}_figure", figure)
         setattr(self, f"{station_name}_canvas", canvas)
         setattr(self, f"{station_name}_ax_temp", ax_temp)
@@ -802,17 +1084,12 @@ class App:
         setattr(self, f"{station_name}_x_axis_range_var", x_axis_range_var)
         setattr(self, f"{station_name}_toolbar", toolbar)
         setattr(self, f"{station_name}_toolbar_frame", toolbar_frame)
-
         setattr(self, f"{station_name}_start_date_entry", start_date_entry)
         setattr(self, f"{station_name}_start_time_entry", start_time_entry)
         setattr(self, f"{station_name}_end_date_entry", end_date_entry)
         setattr(self, f"{station_name}_end_time_entry", end_time_entry)
-        setattr(self, f"{station_name}_calculate_text", calculate_text)
         setattr(self, f"{station_name}_calculate_button", calculate_button)
-
-        setattr(self, f"{station_name}_channel_labels", channel_labels)  # 儲存頻道標籤
-
-        setattr(self, f"{station_name}_memo_text", memo_text)  # 儲存備註文本框
+        setattr(self, f"{station_name}_memo_text", memo_text)
 
         # 啟動 FuncAnimation
         anim = FuncAnimation(
@@ -827,742 +1104,361 @@ class App:
         # 保存動畫引用，避免被垃圾回收
         setattr(self, f"{station_name}_animation", anim)
 
-    def setup_report_page(self, frame, station_name):
-        """設置 REPORT 頁面的控件"""
-        report_text = tk.Text(frame, height=35, width=100, wrap="word")
-        report_text.grid(row=0, column=0, padx=5, pady=5)
-        report_text.insert(tk.END, "NA\n")
-        save_button = ttk.Button(frame, text="儲存", command=lambda: self.save_report(station_name), width=10)
-        save_button.grid(row=1, column=0, padx=5, pady=5)
-
-        setattr(self, f"{station_name}_report_text", report_text)
-  
-    
-    def save_report(self, station_name):
-        """儲存報告"""
-        file_path = filedialog.askdirectory()
-        if not file_path:
-            self.show_error_dialog("路徑錯誤", "請先選擇儲存路徑")
-            return
-        report_text = getattr(self, f"{station_name}_report_text", None)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if report_text:
-            report_content = report_text.get("1.0", tk.END)
-            file_name = f"{station_name}_report_{timestamp}.txt"
-            with open(f"{file_path}/{file_name}", "w") as f:
-                f.write(report_content)
-            messagebox.showinfo("儲存成功", f"報告已儲存到 {file_path}/{file_name}")
-        else:
-            self.show_error_dialog("報告錯誤", "無法獲取報告內容")
-
-    def parse_channels(self, channel_str: str) -> list[str]:
-        channels = []
-        parts = channel_str.split(',')
-        for part in parts:
-            part = part.strip()
-            if '-' in part:
-                start, end = part.split('-')
-                start, end = start.strip(), end.strip()
-                prefix_start, num_start = start[:2], int(start[2:])
-                prefix_end, num_end = end[:2], int(end[2:])
-                if prefix_start != prefix_end:
-                    raise ValueError("範圍必須在同一區段，例如 0201-0207")
-                for n in range(num_start, num_end + 1):
-                    channels.append(f"{prefix_start}{n:02d}")
-            else:
-                if len(part) != 4 or not part.isdigit():
-                    raise ValueError("頻道格式錯誤，必須為4位數字")
-                channels.append(part)
-        return sorted(channels)
-
-    def start_collection(self, station_name):
-        """啟動數據收集"""
-        if not self.gx20_connected:
-            self.handle_gx20_connection_error()
-            return
-        
-        try:
-            # 檢查檔案路徑
-            file_path_var = getattr(self, f"{station_name}_file_path_var", None)
-            if not file_path_var or not file_path_var.get():
-                self.show_error_dialog("路徑錯誤", "請先選擇儲存路徑")
-                return
-            self.file_path = file_path_var.get()
-
-            # **檢查至少有一個頻道被勾選**
-            checkboxes = getattr(self, f"{station_name}_checkboxes", {})
-            if not any(var.get() == 1 for var in checkboxes.values()):
-                self.show_error_dialog("頻道選擇錯誤", "請至少勾選一個頻道！")
-                return
-
-            # 啟用 stop 按鈕，禁用 start 按鈕
-            start_button = getattr(self, f"{station_name}_start_button", None)
-            stop_button = getattr(self, f"{station_name}_stop_button", None)
-            pause_button = getattr(self, f"{station_name}_pause_button", None)
-            frequency_menu = getattr(self, f"{station_name}_frequency_menu", None)
-            
-            if start_button:
-                start_button.config(state="disabled")
-            if stop_button:
-                stop_button.config(state="normal")
-            if pause_button:
-                pause_button.config(state="normal")
-            if frequency_menu:
-                frequency_menu.config(state="disabled")
-            
-            # 初始化該工位的數據儲存結構
-            self.station_data[station_name] = {
-                "time_data": [],
-                "temperature_data": [],
-                "power_data": []
-            }
-            
-            # 確保圖表初始化
-            ax_temp = getattr(self, f"{station_name}_ax_temp", None)
-            ax_power = getattr(self, f"{station_name}_ax_power", None)
-            if ax_temp and ax_power:
-                ax_temp.clear()
-                ax_power.clear()
-
-
-            # 設置收集狀態
-            self.collecting[station_name] = True
-
-            # ===== 新增：頁籤加上 [] =====
-            for idx in range(self.notebook.index("end")):
-                tab_text = self.notebook.tab(idx, "text").replace(" ", "")
-                if tab_text == station_name:
-                    self.notebook.tab(idx, text=f"[{tab_text}]")
-                    break
-            # ===========================
-            
-            # 取得工位對應的頻道和 IP
-            channels = self.parse_channels(self.channel_number[station_name])
-            station_index = int(station_name[-1]) - 1
-            pw_ip = f"192.168.1.{station_index + 2}"
-            
-            # 初始化該工位的數據儲存結構
-            self.station_data[station_name] = {
-                "time_data": [],
-                "temperature_data": [],
-                "power_data": []
-            }
-            
-            # 啟動數據收集執行緒
-            collection_thread = threading.Thread(
-                target=self.collect_data,
-                args=(pw_ip, channels, station_name),
-                daemon=True
-            )
-            collection_thread.start()
-            log_info(f"{station_name} 開始收集數據")
-            # 啟動圖表更新
-            self.start_plot_update(station_name)
-        except Exception as e:
-            self.handle_data_collection_error(station_name, str(e))
-            self.stop_collection(station_name)
-
-    def stop_collection(self, station_name):
-        """停止指定工位的數據收集"""
-        self.collecting[station_name] = False
-        # 清除數據
-        self.station_data[station_name] = {
-            "time_data": [],
-            "temperature_data": [],
-            "power_data": []
-        }
-        
-        # 清除圖表
+    def update_plot(self, frame, station_name, active_ch_list=None):
+        """更新圖表"""
+        artists = []
+        if not self.collecting.get(station_name, False):
+            return artists
+        plot_data = self.plot_data.get(station_name, [])
+        if len(plot_data) == 0:
+            return artists
+        figure = getattr(self, f"{station_name}_figure", None)
         ax_temp = getattr(self, f"{station_name}_ax_temp", None)
         ax_power = getattr(self, f"{station_name}_ax_power", None)
-        if ax_temp and ax_power:
+        x_axis_range_var = getattr(self, f"{station_name}_x_axis_range_var", None)
+
+        # 取得 active_ch_list
+        if active_ch_list is None:
+            active_ch_list = self.get_enabled_channel(station_name)
+         
+        # 更新圖表
+        if figure and ax_temp and ax_power and not self.pause_plot[station_name]:
+            # 清除舊數據
             ax_temp.clear()
             ax_power.clear()
-            canvas = getattr(self, f"{station_name}_canvas", None)
-            if canvas:
-                canvas.draw()
-
-        # ===== 新增：頁籤移除 [] =====
-        for idx in range(self.notebook.index("end")):
-            tab_text = self.notebook.tab(idx, "text")
-            if tab_text.replace("[", "").replace("]", "").replace(" ", "") == station_name:
-                self.notebook.tab(idx, text=station_name)
-                break
-        # ===========================
-        
-        # 啟用 start 按鈕，禁用 stop 按鈕和 pause 按鈕
-        start_button = getattr(self, f"{station_name}_start_button", None)
-        stop_button = getattr(self, f"{station_name}_stop_button", None)
-        pause_button = getattr(self, f"{station_name}_pause_button", None)
-        frequency_menu = getattr(self, f"{station_name}_frequency_menu", None)
-        
-        if start_button:
-            start_button.config(state="normal")
-        if stop_button:
-            stop_button.config(state="disabled")
-        if pause_button:
-            pause_button.config(state="disabled")
-            pause_button.config(text="暫停")  # 重設暫停按鈕文字
-        if frequency_menu:
-            frequency_menu.config(state="normal")
-        
-        # 關閉正在寫入的 CSV 檔案
-        file_name_entry = getattr(self, f"{station_name}_file_name_entry", None)
-        if file_name_entry:
-            file_name = file_name_entry.get()
-            if file_name:
-                file_path = os.path.join(self.file_path, file_name)
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, 'r+'):  # Open and close to ensure it's not locked
-                        pass
-                except Exception as e:
-                    log_error(f"Error closing CSV file for {station_name}: {e}")
-        # 重設暫停狀態
-        self.pause_plot = False
-        log_info(f"{station_name} 停止收集數據")
-
-    def collect_data(self, pw_ip, channels, station_name):
-        """收集數據並保存到 CSV 文件"""
-        try:
-            # 檢查 PW3335 連線
-            pw = self.pw3335_instances.get(pw_ip)
-            if not pw:
-                try:
-                    pw = PW3335(pw_ip)
-                    pw.connect()
-                    self.pw3335_instances[pw_ip] = pw
-                except Exception as e:
-                    self.show_error_dialog("設備錯誤", f"{station_name} 的 PW3335 未連線")
-                    self.stop_collection_with_error(station_name, "PW3335 未連線")
-                    return
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_name = f"{self.file_path}/{timestamp}_{station_name}.csv"
-            
-            file_name_entry = getattr(self, f"{station_name}_file_name_entry", None)
-            file_name_entry.config(state="normal")
-            file_name_entry.delete(0, tk.END)
-            file_name_entry.insert(0, os.path.basename(file_name))
-            file_name_entry.config(state="readonly")
-            
-            # 取得該工位的 alias 設定
-            ch_aliases = getattr(self, f"{station_name}_ch_aliases", {})
-            
-            with open(file_name, mode="a", newline="", buffering=1) as file:
-                writer = csv.writer(file)
-                # 寫入機種資訊行
-                model_entry = getattr(self, f"{station_name}_model_entry", None)
-                model_value = model_entry.get() if model_entry else "NA"
-                writer.writerow([f"DateTime: {timestamp}"])
-                writer.writerow([f"Model: {model_value}"])
-                # 寫入標題行：使用 alias 或預設頻道名稱
-                header = ["Date", "Time"]
-                for i, ch in enumerate(channels):
-                    # 取得對應的 alias entry
-                    alias_entry = ch_aliases.get(ch)
-                    if alias_entry and alias_entry.get().strip():
-                        # 如果有設定 alias 且不為空，使用 alias
-                        header.append(f"{alias_entry.get().strip()}")
-                    else:
-                        # 否則使用預設的頻道名稱
-                        header.append(f"CH{ch}")
-                
-                # 加入電力頻道
-                header.extend(["U(V)", "I(A)", "P(W)", "WP(Wh)"])
-                writer.writerow(header)
-
-                frequency_var = getattr(self, f"{station_name}_frequency_var", None)
-                if not frequency_var:
-                    raise AttributeError(f"Frequency variable for {station_name} is not defined.")
-
-                # 取得該工位的 checkbox 狀態（僅用於圖表顯示）
-                #checkboxes = getattr(self, f"{station_name}_checkboxes", {})
-
-                while self.collecting.get(station_name, False):
-                    now = datetime.now()
-                    temperatures = []
-                    for ch in channels:
-                        value = self.gx20_data_dict.get(ch, {}).get("value")
-                        temperatures.append(value if value is not None and value <= 999 else None)
-
-                    power_data = [None] * 4
-                    try:
-                        power_data = pw.query_data()[:4]
-                    except Exception as e:
-                        log_error(f"collect_data.pw.query_data()發生錯誤: {e} at {pw_ip}")
-
-                    # 寫入所有數據：時間 + 20個溫度 + 4個電力值
-                    writer.writerow([now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S")] + 
-                                temperatures + power_data)
-                    file.flush()
-
-                    # 更新數據存儲
-                    self.station_data[station_name]["temperature_data"].append((now, {ch: temp for ch, temp in zip(channels, temperatures)}))
-                    self.station_data[station_name]["power_data"].append((now, power_data[2]))  # P(W)
-
-                    time.sleep(frequency_var.get())
-        except Exception as e:
-            self.handle_data_collection_error(station_name, str(e))
-            self.stop_collection_with_error(station_name, str(e))
-            #print(f"Data collection error for {station_name}: {e}")
-            log_error(f"collect_data error for {station_name}: {e}")
-            # 關閉 CSV 檔案
-            file.close()
-
-
-    def on_closing(self):
-        """關閉程式時斷開所有 PW3335 連線"""
-        # 檢查是否有工位正在啟動
-        active_stations = [station for station, is_collecting in self.collecting.items() if is_collecting]
-        if active_stations:
-            tk.messagebox.showwarning(
-                "警告", 
-                f"以下工位正在收集數據，請先停止數據收集再退出程序：\n{', '.join(active_stations)}"
-            )
-            log_info(f"以下工位正在收集數據，請先停止數據收集再退出程序：\n{', '.join(active_stations)}")
-        else:
-            # 斷開所有 PW3335 連線
-            for pw in self.pw3335_instances.values():
-                try:
-                    pw.disconnect()
-                except:
-                    pass
-            # 關閉所有開啟的 CSV 檔案
-            for station_name in self.station_data.keys():
-                try:
-                    file_name_entry = getattr(self, f"{station_name}_file_name_entry", None)
-                    if file_name_entry:
-                        file_name = file_name_entry.get()
-                        if file_name:
-                            file_path = os.path.join(self.file_path, file_name)
-                            if os.path.exists(file_path):
-                                with open(file_path, 'r+'):  # Open and close to ensure it's not locked
-                                    pass
-                except Exception as e:
-                    log_error(f"Error closing CSV file for {station_name}: {e}")
-            self.root.destroy()
-            log_info("程式已關閉")
-
-    def gx20_data_updater(self):
-        """持續連線GX20並更新所有頻道數據到 self.gx20_data_dict，並即時更新各工位溫度顯示"""
-        while True:
-            try:
-                self.gx20_instance.GX20GetData()
-                self.gx20_data_dict = self.gx20_instance.valid_data.copy()
-                self.gx20_connected = True
-                
-
-                
-                # 依照每個工位的頻道設定，更新溫度顯示
-                for i in range(1, 7):
-                    station_name = f"工位{i}"
-
-                    # 新增：更新 PLOT 頁面的頻道讀值
-                    self.root.after(0, self.update_plot_channel_values, station_name)
-                    
-            except Exception as e:
-                self.handle_gx20_connection_error()
-                print(f"GX20 connection error: {e}")
-                log_error(f"GX20 connection error: {e}")
-            time.sleep(2)
-
-    # 新增：更新 PLOT 頁面頻道名稱的方法
-    def update_plot_channel_values(self, station_name):
-        checkboxes = getattr(self, f"{station_name}_checkboxes", None)
-        
-        """更新 PLOT 頁面的頻道讀值顯示"""
-        if station_name not in self.plot_channel_labels:
-            return
-            
-        for channel, label in self.plot_channel_labels[station_name]:
-            value = self.gx20_data_dict.get(channel, {}).get("value")
-            if value is not None and value <= 999:
-                label.config(text=f"{value:.1f}")
-                #checkboxes[channel].set(1)  # 將對應的 checkbox 設為enabled
+            # 設置 X 軸範圍
+            x_axis_range = x_axis_range_var.get() if x_axis_range_var is not None else "30min"
+            if x_axis_range == "30min":
+                time_delta = pd.Timedelta(minutes=30)
+            elif x_axis_range == "3hrs":
+                time_delta = pd.Timedelta(hours=3)
+            elif x_axis_range == "12hrs":
+                time_delta = pd.Timedelta(hours=12)
+            elif x_axis_range == "24hrs":
+                time_delta = pd.Timedelta(hours=24)
             else:
-                label.config(text="--")
-                checkboxes[channel].set(0)  # 將對應的 checkbox 設為未選中
-                
-    def show_error_dialog(self, title: str, message: str):
-        """顯示錯誤對話框"""
-        tk.messagebox.showerror(title, message)
-        print(f"{title}: {message}")
-        log_error(f"{title}: {message}")
+                time_delta = pd.Timedelta(minutes=30)
 
-    def handle_gx20_connection_error(self):
-        """處理 GX20 連線錯誤"""
-        self.gx20_connected = False
-        self.root.title("SAMPO GX20/PW3335 Data Collection - GX20無法連線")
-        self.show_error_dialog("連線錯誤","GX20 紀錄器連線失敗。")
+            # 設置 X 軸範圍
+            self.x_start[station_name] = plot_data[0][0] - time_delta
+            self.x_end[station_name] = plot_data[-1][0]
+            ax_temp.set_xlim(self.x_start[station_name], self.x_end[station_name])
+            ax_power.set_xlim(self.x_start[station_name], self.x_end[station_name])
 
-    def handle_data_collection_error(self, station_name: str, error_msg: str):
-        """處理數據收集錯誤"""
-        self.collecting[station_name] = False
-        self.show_error_dialog("數據收集錯誤", f"工位 {station_name} 數據收集錯誤：{error_msg}")
+            # 設置 Y 軸格線
+            ax_temp.yaxis.grid(True)
+            ax_power.yaxis.grid(True)
 
-    def stop_collection_with_error(self, station_name, error_msg):
-        """停止數據收集並恢復按鈕狀態"""
-        # 停止數據收集
-        self.collecting[station_name] = False
-        
-        # 恢復按鈕狀態
-        start_button = getattr(self, f"{station_name}_start_button", None)
-        stop_button = getattr(self, f"{station_name}_stop_button", None)
-        pause_button = getattr(self, f"{station_name}_pause_button", None)
-        
-        if start_button:
-            start_button.config(state="normal")
-        if stop_button:
-            stop_button.config(state="disabled")
-        if pause_button:
-            pause_button.config(state="disabled")
-            pause_button.config(text="暫停")
-        
-        # 重設暫停狀態
-        self.pause_plot = False
-        
-        # 顯示錯誤訊息
-        self.show_error_dialog("數據收集停止", f"{station_name} 數據收集已停止：{error_msg}")
+            # 只顯示 active_ch_list 設定的頻道
+            for ch_info in active_ch_list:
+                i, alias, channel_num = ch_info
+                temp_values = [data[1][i] for data in plot_data]
+                label = alias if alias else f"Ch{channel_num}"
+                line, = ax_temp.plot([data[0] for data in plot_data], temp_values, label=label)
+                artists.append(line)
+            # 只顯示啟用的頻道圖例
+            if active_ch_list:
+                legend = ax_temp.legend(
+                    [alias if alias else f"Ch{channel_num}" for _, alias, channel_num in active_ch_list],
+                    loc="upper left",
+                    prop=self.font_prop)
+                artists.append(legend)
+            # 更新電力圖表
+            # 修正：power_data 是 list，應用索引而不是字典 key
+            power_values = [data[2][2] if isinstance(data[2], list) and len(data[2]) > 2 else None for data in plot_data]
+            power_line, = ax_power.plot([data[0] for data in plot_data], power_values, label="Power")
+            artists.append(power_line)
+        return artists
 
-    def update_plot(self, frame=None, station_name=None):
-        """更新圖表數據"""
-        # 檢查 station_name
-        if station_name is None:
-            if hasattr(frame, 'station_name'):
-                station_name = frame.station_name
-            else:
-                return  # 靜默返回，不顯示錯誤信息
-        
-        if self.pause_plot:
-            return
-
-        # 檢查數據是否已經開始收集
-        if not self.collecting.get(station_name, False):
-            return  # 如果尚未開始收集數據，直接返回
-            
-        # 檢查並獲取數據
-        try:
-            temp_line = self.station_data[station_name]["temperature_data"]
-            power_line = self.station_data[station_name]["power_data"]
-            
-            # 檢查是否有數據
-            if not temp_line or not power_line:
-                return  # 靜默返回，不顯示錯誤信息
-                
-        except (KeyError, AttributeError) as e:
-            return  # 靜默返回，不顯示錯誤信息
-
-        # 取得頻率與 X 軸範圍
-        frequency_var = getattr(self, f"{station_name}_frequency_var", None)
-        x_axis_range_var = getattr(self, f"{station_name}_x_axis_range_var", None)
-        if not frequency_var or not x_axis_range_var:
-            return
-
-        # 設定 X 軸範圍
-        axis_range = {
-            "30min": timedelta(minutes=30),
-            "3hrs": timedelta(hours=3),
-            "12hrs": timedelta(hours=12),
-            "24hrs": timedelta(hours=24),
-        }.get(x_axis_range_var.get(), timedelta(minutes=30))
-
-        # 檢查並獲取數據
-        try:
-            temp_line = self.station_data[station_name]["temperature_data"]
-            power_line = self.station_data[station_name]["power_data"]
-        except (KeyError, AttributeError) as e:
-            self.show_error_dialog("數據錯誤",f"無法訪問 {station_name} 的數據，請檢查數據收集狀態。")
-            return
-
-        # 檢查是否有數據
-        if not temp_line or not power_line:
-            self.show_error_dialog("數據錯誤", f"No data in temp_line or power_line for {station_name}")
-            return
-
-        # 設定 X 軸範圍
-        try:
-            latest_time = temp_line[-1][0]
-            start_time = latest_time - axis_range
-        except IndexError:
-            print(f"No valid time data for {station_name}")
-            log_error(f"app.update_plot: No valid time data for {station_name}")
-            return
-
-        # 獲取 ax_temp 和 ax_power
-        ax_temp = getattr(self, f"{station_name}_ax_temp", None)
-        ax_power = getattr(self, f"{station_name}_ax_power", None)
-        if not ax_temp or not ax_power:
-            print(f"Error: ax_temp or ax_power not initialized for {station_name}")
-            log_error(f"app.update_plot: ax_temp or ax_power not initialized for {station_name}")
-            return
-
-        # 清除圖表
-        ax_temp.clear()
-        ax_power.clear()
-
-        # 更新溫度折線圖
-        checkboxes = getattr(self, f"{station_name}_checkboxes", {})
-        ch_aliases = getattr(self, f"{station_name}_ch_aliases", {})
-
-        legend_labels = []
-        for ch, var in checkboxes.items():
-                if var.get() == 1:  # 如果該頻道被選中
-                    alias_entry = ch_aliases.get(ch)
-                    alias = alias_entry.get().strip() if alias_entry and alias_entry.get().strip() else f"CH{ch}"
-                    legend_labels.append(alias)
-                    times = [data[0] for data in temp_line if data[0] >= start_time]
-                    values = [data[1].get(ch, None) for data in temp_line if data[0] >= start_time]
-                    values = [v for v in values if v is not None]  # 過濾掉 None
-                    if times and values:  # 確保有數據
-                        ax_temp.plot(times, values, label=alias)
-                    else:
-                        print(f"No valid data for {ch} in {station_name}")
-                        log_error(f"app.ipdate_plot: No valid data for {ch} in {station_name}")
-                        continue  # 如果沒有數據，則跳過該頻道      
-        # 添加 legend
-        ax_temp.legend(legend_labels, loc="upper left")
-
-        # 設置 Y 軸標籤和網格
-        ax_temp.set_ylabel("Temperature (°C)")
-        ax_temp.grid(True)
-
-        # 更新功率折線圖
-        times = [data[0] for data in power_line if data[0] >= start_time]
-        powers = [data[1] for data in power_line if data[0] >= start_time]
-        ax_power.plot(times, powers, color="red")
-        ax_power.set_xlabel("Time")
-        ax_power.set_ylabel("Power (W)")
-        ax_power.grid(True)
-
-        # 設置 X 軸範圍和格式
-        ax_temp.set_xlim(start_time, latest_time)
-        ax_power.set_xlim(start_time, latest_time)
-        ax_power.xaxis.set_major_formatter(mdates.DateFormatter("%d-%H:%M"))
-        ax_power.tick_params(axis="x", rotation=45)
-
-        # 更新圖表
-        canvas = getattr(self, f"{station_name}_canvas", None)
-        if canvas:
-            canvas.draw()
+    def _on_showtemp_drag(self, station_name, x_pos):
+        """將 showtemp_draggable 的x 軸數值轉為 datetime，並顯示對應溫度"""
+        dt = mdates.num2date(x_pos)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        self.show_temp_at_datetime(station_name, dt)
 
     def toggle_pause_plot(self, station_name):
-        """暫停或恢復圖表更新"""
+        # 檢查 plot_data 是否有 10 筆以上，否則停止程序
+        if len(self.plot_data.get(station_name, [])) < 10:
+            self.show_error_dialog("資料不足", "資料筆數不足 10 筆，無法暫停/分析。")
+            return
+        """切換暫停/繼續圖表更新，暫停時於X軸起訖加axvline，繼續時隱藏，並可拖曳vline"""
         pause_button = getattr(self, f"{station_name}_pause_button", None)
-        self.pause_plot = not self.pause_plot
-        if self.pause_plot:
-            pause_button.config(text="恢復")
+        ax_temp = getattr(self, f"{station_name}_ax_temp", None)
+        ax_power = getattr(self, f"{station_name}_ax_power", None)
 
-            # 填入目前 X 軸的資料到 start_date, start_time, end_date, end_time
-            try:
-                x_start, x_end = self.get_x_axis_range(station_name)
-                start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
-                start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
-                end_date_entry = getattr(self, f"{station_name}_end_date_entry", None)
-                end_time_entry = getattr(self, f"{station_name}_end_time_entry", None)
+        # 用於儲存axvline物件
+        if not hasattr(self, "_pause_axvlines"):
+            self._pause_axvlines = {}
+        if not hasattr(self, "_pause_draggables"):
+            self._pause_draggables = {}
 
-                if start_date_entry and start_time_entry and end_date_entry and end_time_entry:
-                    start_date_entry.delete(0, tk.END)
-                    start_date_entry.insert(0, x_start.strftime('%Y-%m-%d'))
-                    start_time_entry.delete(0, tk.END)
-                    start_time_entry.insert(0, x_start.strftime('%H:%M'))
-                    end_date_entry.delete(0, tk.END)
-                    end_date_entry.insert(0, x_end.strftime('%Y-%m-%d'))
-                    end_time_entry.delete(0, tk.END)
-                    end_time_entry.insert(0, x_end.strftime('%H:%M'))
-            except AttributeError as e:
-                print(f"讀不到 start/end date/time 欄位: {e}")
-                self.show_error_dialog("錯誤", f"讀不到 start/end date/time 欄位: {e}")
-        else:
-            pause_button.config(text="暫停")
-            self.update_plot(station_name)  # 恢復時立即更新一次圖表
+        if pause_button:
+            if self.pause_plot[station_name] == True:
+                # 恢復繪圖，移除axvline與DraggableLine
+                self.pause_plot[station_name] = False
+                pause_button.config(text="暫停")
+                # 移除axvline
+                lines = self._pause_axvlines.get(station_name, [])
+                for line in lines:
+                    try:
+                        line.remove()
+                    except Exception:
+                        pass
+                self._pause_axvlines[station_name] = []
+                # 移除 DraggableLine
+                draggables = self._pause_draggables.get(station_name, [])
+                for d in draggables:
+                    # 解除事件綁定
+                    try:
+                        d.line.figure.canvas.mpl_disconnect(d.cid_press)
+                        d.line.figure.canvas.mpl_disconnect(d.cid_release)
+                        d.line.figure.canvas.mpl_disconnect(d.cid_motion)
+                        d.line.remove()
+                    except Exception:
+                        pass
+                self._pause_draggables[station_name] = []
+                # 重新繪圖
+                canvas = getattr(self, f"{station_name}_canvas", None)
+                if canvas:
+                    canvas.draw_idle()
+            else:
+                # 暫停繪圖，顯示axvline並可拖曳
+                self.pause_plot[station_name] = True
+                pause_button.config(text="繼續")
+                # 填入目前 X 軸的資料到 start_date, start_time, end_date, end_time
+                try:
+                    start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
+                    start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
+                    end_date_entry = getattr(self, f"{station_name}_end_date_entry", None)
+                    end_time_entry = getattr(self, f"{station_name}_end_time_entry", None)
+                    time_offset = pd.Timedelta(self.x_end[station_name] - self.x_start[station_name])*0.25
+                    
+                    if start_date_entry and start_time_entry and end_date_entry and end_time_entry:
+                        start_date_entry.delete(0, tk.END)
+                        start_date_entry.insert(0, (self.x_start[station_name] + time_offset).strftime('%Y-%m-%d'))
+                        start_time_entry.delete(0, tk.END)
+                        start_time_entry.insert(0, (self.x_start[station_name]+ time_offset).strftime('%H:%M:%S'))
+                        end_date_entry.delete(0, tk.END)
+                        end_date_entry.insert(0, (self.x_end[station_name]- time_offset).strftime('%Y-%m-%d'))
+                        end_time_entry.delete(0, tk.END)
+                        end_time_entry.insert(0, (self.x_end[station_name]- time_offset).strftime('%H:%M:%S'))
+                except AttributeError as e:
+                    print(f"讀不到 start/end date/time 欄位: {e}")
+
+                # 畫出x_start, x_end的axvline，並用DraggableLine包裝
+                draggables = []
+                lines = []
+                if ax_temp and ax_power:
+                    vline_start_pos = self.x_start[station_name] + time_offset
+                    vline_end_pos = self.x_end[station_name] - time_offset
+                    vline_show_pos = self.x_end[station_name] - pd.Timedelta(minutes=1)
+                    # 建立 DraggableLine 物件
+                    start_draggable = DraggableLine(
+                        ax_temp, None, None, vline_start_pos,
+                        color='blue', linestyle='--', linewidth=2,
+                        date_var=getattr(self, f"{station_name}_start_date"),
+                        time_var=getattr(self, f"{station_name}_start_time")
+                    )
+                    end_draggable = DraggableLine(
+                        ax_temp, None, None, vline_end_pos,
+                        color='red', linestyle='--', linewidth=2,
+                        date_var=getattr(self, f"{station_name}_end_date"),
+                        time_var=getattr(self, f"{station_name}_end_time")
+                    )
+                    showtemp_draggable = DraggableLine(
+                        ax_temp, None, None, vline_show_pos,
+                        color='green', linestyle='--', linewidth=2,
+                        date_var=None,
+                        time_var=None,
+                        on_drag_callback=lambda x_pos: self._on_showtemp_drag(station_name, x_pos)
+                    )
+                    
+                    draggables.extend([start_draggable, end_draggable, showtemp_draggable])
+                    lines.extend([start_draggable.line, end_draggable.line, showtemp_draggable.line])
+                    self._pause_axvlines[station_name] = lines
+                    self._pause_draggables[station_name] = draggables
+                    canvas = getattr(self, f"{station_name}_canvas", None)
+                    if canvas:
+                        canvas.draw_idle()
     
-    def get_x_axis_range(self, station_name):
-            """根據選擇的 X 軸範圍返回時間範圍"""
-            now = datetime.now()
-            range_mapping = {
-                "30min": timedelta(minutes=30),
-                "3hrs": timedelta(hours=3),
-                "12hrs": timedelta(hours=12),
-                "24hrs": timedelta(hours=24),
-            }
-            x_axis_range_var = getattr(self, f"{station_name}_x_axis_range_var", None)
-            if x_axis_range_var is None:
-                raise AttributeError(f"x_axis_range_var for {station_name} is not defined.")
-            selected_range = range_mapping.get(x_axis_range_var.get(), timedelta(minutes=30))
-            return now - selected_range, now
     
-    
-    def calculate_avg_temp(self, station_name):
-        """計算指定時間範圍內的平均溫度，僅針對選定的頻道"""
+
+    def show_temp_at_datetime(self, station_name, dt):
+        """根據 datetime 找出最接近的溫度資料，顯示在 channel_labels"""
+        plot_data = self.plot_data.get(station_name, [])
+        if not plot_data:
+            return
+        # 找到最接近 dt 的資料
+        closest = min(plot_data, key=lambda x: abs(x[0] - dt))
+        temps = closest[1]
+        channel_labels = self.plot_channel_labels.get(station_name, {})
+        for i, (ch_num) in enumerate(self.gx20_instance.channel_number[station_name]):
+            label = channel_labels.get(ch_num)
+            if label:
+                label.config(text=f"{temps[i]:.1f}" if temps[i] is not None else "--")
+
+    def calculate_average(self, station_name):
+        """計算平均值"""
+        start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
+        start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
+        end_date_entry = getattr(self, f"{station_name}_end_date_entry", None)
+        end_time_entry = getattr(self, f"{station_name}_end_time_entry", None)
+
+        # 檢查日期和時間格式
         try:
-            # 動態獲取對應工位的日期和時間輸入框
-            start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
-            start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
-            end_date_entry = getattr(self, f"{station_name}_end_date_entry", None)
-            end_time_entry = getattr(self, f"{station_name}_end_time_entry", None)
-            calculate_text = getattr(self, f"{station_name}_calculate_text", None)
-            checkboxes = getattr(self, f"{station_name}_checkboxes", {})
-
-            if not all([start_date_entry, start_time_entry, end_date_entry, end_time_entry, calculate_text]):
-                raise AttributeError(f"One or more required widgets for {station_name} are not defined.")
-
-            # 獲取開始和結束時間
-            start_datetime = pd.to_datetime(f"{start_date_entry.get()} {start_time_entry.get()}")
-            end_datetime = pd.to_datetime(f"{end_date_entry.get()} {end_time_entry.get()}")
-
+            start_date = start_date_entry.get() if start_date_entry else ""
+            start_time = start_time_entry.get() if start_time_entry else ""
+            end_date = end_date_entry.get() if end_date_entry else ""
+            end_time = end_time_entry.get() if end_time_entry else ""
+            start_datetime = pd.to_datetime(f"{start_date} {start_time}")
+            end_datetime = pd.to_datetime(f"{end_date} {end_time}")
             if start_datetime >= end_datetime:
-                tk.messagebox.showerror("錯誤", "開始時間必須早於結束時間")
-                return
+                raise ValueError("結束時間必須晚於開始時間")
+        except ValueError as e:
+            self.show_error_dialog("錯誤", f"計算平均-無效的日期或時間格式: {e}")
+            return
 
-            # 篩選在指定範圍內的溫度數據
-            temp_data = self.station_data[station_name]
-            filtered_temps = [
-                temps for time, temps in temp_data["temperature_data"]
-                if start_datetime <= time <= end_datetime
-            ]
-
-            if not filtered_temps:
-                tk.messagebox.showinfo("提示", "指定範圍內沒有溫度數據")
-                return
-
-            # 僅計算選定的頻道
-            selected_channels = [ch for ch, var in checkboxes.items() if var.get() == 1]
-            if not selected_channels:
-                tk.messagebox.showinfo("提示", "未選擇任何頻道")
-                return
-
-            # 計算每個選定頻道的平均溫度
-            avg_temps = {}
-            for ch in selected_channels:
-                channel_temps = [temps.get(ch) for temps in filtered_temps if temps.get(ch) is not None]
-                if channel_temps:
-                    avg_temps[ch] = sum(channel_temps) / len(channel_temps)
-                else:
-                    avg_temps[ch] = None
-
-            # 顯示結果
-            calculate_text.config(state="normal")
-            calculate_text.delete("1.0", tk.END)
-            for ch, avg_temp in avg_temps.items():
-                if avg_temp is not None:
-                    calculate_text.insert(tk.END, f"{ch}: {avg_temp:.1f}°C\n")
-                else:
-                    calculate_text.insert(tk.END, f"{ch}: --°C\n")
-            calculate_text.config(state="disabled")
-
-        except Exception as e:
-            tk.messagebox.showerror("錯誤", f"計算平均溫度時發生錯誤: {e}")
-            print(f"計算平均溫度時發生錯誤: {e}")
-
-
-    def report_calculate(self, station_name):
-        """計算報告"""
         try:
-            # 動態獲取對應工位的日期和時間輸入框
-            start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
-            start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
-            end_date_entry = getattr(self, f"{station_name}_end_date_entry", None)
-            end_time_entry = getattr(self, f"{station_name}_end_time_entry", None)
-            report_text = getattr(self, f"{station_name}_report_text", None)
-            checkboxes = getattr(self, f"{station_name}_checkboxes", {})
-
-            if not all([start_date_entry, start_time_entry, end_date_entry, end_time_entry, report_text]):
-                raise AttributeError(f"One or more required widgets for {station_name} are not defined.")
-
-            # 獲取開始和結束時間
-            start_datetime = pd.to_datetime(f"{start_date_entry.get()} {start_time_entry.get()}")
-            end_datetime = pd.to_datetime(f"{end_date_entry.get()} {end_time_entry.get()}")
-
-            if start_datetime >= end_datetime:
-                tk.messagebox.showerror("錯誤", "開始時間必須早於結束時間")
-                return
-
-            # 篩選在指定範圍內的數據
-            temp_data = self.station_data[station_name]
-            filtered_temps = [
-                temps for time, temps in temp_data["temperature_data"]
-                if start_datetime <= time <= end_datetime
-            ]
-
-            if not filtered_temps:
-                tk.messagebox.showinfo("提示", "指定範圍內沒有數據")
-                return
-
-            # 僅計算選定的頻道
-            selected_channels = [ch for ch, var in checkboxes.items() if var.get() == 1]
-            if not selected_channels:
-                tk.messagebox.showinfo("提示", "未選擇任何頻道")
-                return
-
-            # 計算每個選定頻道的平均值和標準差
-            avg_temps = {}
-            std_temps = {}
-            for ch in selected_channels:
-                channel_temps = [temps.get(ch) for temps in filtered_temps if temps.get(ch) is not None]
-                if channel_temps:
-                    avg_temp = sum(channel_temps) / len(channel_temps)
-                    std_temp = (sum([(temp - avg_temp) ** 2 for temp in channel_temps]) / len(channel_temps)) ** 0.5
-                    avg_temps[ch] = avg_temp
-                    std_temps[ch] = std_temp
-                else:
-                    avg_temps[ch] = None
-                    std_temps[ch] = None
-            
-            # 讀取正在紀錄的 CSV 檔案
-            try:
-                file_path_var = getattr(self, f"{station_name}_file_path_entry", None)
-                file_name_var = getattr(self, f"{station_name}_file_name_entry", None)
-                csv_file = file_path_var.get() + "/" + file_name_var.get()
-                if not os.path.exists(csv_file):
-                    tk.messagebox.showerror("錯誤", "報告計算用的報告計算用的CSV 檔案不存在，請確認儲存路徑是否正確")
-                    log_error("報告計算用的CSV 檔案不存在，請確認儲存路徑是否正確")
-                    return
-
-                # 讀取 CSV 檔案
-                df = pd.read_csv(csv_file, encoding='utf-8',skiprows=2)
-            except Exception as e:
-                tk.messagebox.showerror("錯誤", f"讀取報告計算用的 CSV 檔案時發生錯誤: {e}")
-                print(f"讀取報告計算用的 CSV 檔案時發生錯誤: {e}")
-                log_error(f"讀取報告計算用的 CSV 檔案時發生錯誤: {e}")
-
-            # 合併 Date 和 Time 欄位為 datetime
-            df['datetime'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
-            
-            # 檢查是否有 U(V), I(A), P(W), WP(Wh) 欄位，若無則補上並填入 0
-            required_columns = ['U(V)', 'I(A)', 'P(W)', 'WP(Wh)']
-            for col in required_columns:
-                if col not in df.columns:
-                    df[col] = 0
-            # 計算 start 和 end 之間的分鐘數
-            minutes_difference = int((end_datetime - start_datetime).total_seconds() / 60)
-            
-            # 過濾指定的日期時間範圍，並創建副本
-            filtered_df = df[(df['datetime'] >= start_datetime) & (df['datetime'] <= end_datetime)].copy()
-
-            if filtered_df.empty:
-                messagebox.showinfo("結果", "指定範圍內沒有資料！")
-                return
-
             # 計算平均值
-            averages = filtered_df.mean(numeric_only=True)
+            plot_data = self.plot_data[station_name]
+            filtered_data = [data for data in plot_data if start_datetime <= data[0] <= end_datetime]
+            if len(filtered_data) == 0:
+                self.show_error_dialog("錯誤", "計算平均-在指定範圍內沒有數據")
+                return
 
-            # 計算電力啟停周期
-            power_column = 'P(W)'
-            if power_column in filtered_df.columns:
+            # 排除 None 的數據再計算平均
+            temp_arrays = []
+            for i in range(len(filtered_data[0][1])):
+                # 取出第 i 個 channel 的所有數據，排除 None
+                ch_values = [data[1][i] for data in filtered_data if data[1][i] is not None]
+                if ch_values:
+                    temp_arrays.append(ch_values)
+                else:
+                    temp_arrays.append([])  # 若全為 None，則為空列表
+            avg_temp = []
+            for ch_values in temp_arrays:
+                if ch_values:
+                    avg_temp.append(np.mean(ch_values))
+                else:
+                    avg_temp.append(float('nan'))
+
+            # 顯示平均溫度到 plot_channel_labels
+            channel_labels = getattr(self, f"{station_name}_channel_labels", None)
+            if channel_labels:
+                for i, label in enumerate(channel_labels.values()):
+                    if i < len(avg_temp):
+                        if not np.isnan(avg_temp[i]):
+                            label.config(text=f"({avg_temp[i]:.1f})")
+                        else:
+                            label.config(text="(nan)")
+            #print(avg_text)
+        except Exception as e:
+            self.show_error_dialog("錯誤", f"計算平均值時發生錯誤: {e}")
+
+    def setup_snapshot_page(self, frame, station_name):
+        """設置 REPORT 頁面的控件"""
+        # 能耗計算用欄位
+        model_frame = tk.Frame(frame)  # 使用 Frame 包含文字框
+        model_frame.grid(row=0, column=0, padx=5, pady=10, sticky="w")
+        tk.Label(model_frame, text="溫度設定:").grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="w")
+        tk.Label(model_frame, text="F:").grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        temp_f_entry_var = tk.StringVar(value="-18.0")
+        temp_f_entry = tk.Entry(model_frame, width=5, textvariable=temp_f_entry_var)
+        temp_f_entry.grid(row=2, column=2, padx=5, pady=5, sticky="w")
+        tk.Label(model_frame, text="R:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
+        temp_r_entry_var = tk.StringVar(value="3.0")
+        temp_r_entry = tk.Entry(model_frame, width=5, textvariable=temp_r_entry_var)
+        temp_r_entry.grid(row=2, column=4, padx=5, pady=5, sticky="w")
+        
+        tk.Button(frame, text="計算平均值", command=lambda: self.snapshot_report(station_name)).grid(row=0, column=1, pady=10)
+        tk.Button(frame, text="儲存結果", command=lambda: self.save_results(station_name)).grid(row=0, column=2, pady=10)
+
+
+        report_text = tk.Text(frame, height=30, width=100, wrap="word")
+        report_text.grid(row=1, column=0, columnspan=3, padx=5, pady=5)
+        report_text.insert(tk.END, "NA\n")
+        
+        setattr(self, f"{station_name}_report_text", report_text)
+        setattr(self, f"{station_name}_temp_f_entry_var", temp_f_entry_var)
+        setattr(self, f"{station_name}_temp_r_entry_var", temp_r_entry_var)
+        setattr(self, f"{station_name}_temp_f_entry", temp_f_entry)
+        setattr(self, f"{station_name}_temp_r_entry", temp_r_entry)
+
+    def snapshot_report(self, station_name):
+        """生成報告"""
+        start_date = getattr(self, f"{station_name}_start_date_entry", None)
+        start_time = getattr(self, f"{station_name}_start_time_entry", None)
+        end_date = getattr(self, f"{station_name}_end_date_entry", None)
+        end_time = getattr(self, f"{station_name}_end_time_entry", None)
+        # 檢查日期和時間格式
+        try:
+            start_date = start_date.get() if start_date else ""
+            start_time = start_time.get() if start_time else ""
+            end_date = end_date.get() if end_date else ""
+            end_time = end_time.get() if end_time else ""
+            start_datetime = pd.to_datetime(f"{start_date} {start_time}")
+            end_datetime = pd.to_datetime(f"{end_date} {end_time}")
+            if start_datetime >= end_datetime:
+                raise ValueError("結束時間必須晚於開始時間")
+        except ValueError as e:
+            self.show_error_dialog("錯誤", f"計算:無效的日期或時間格式: {e}")
+            return
+        #print(f"start_date: {start_date}, start_time: {start_time}")
+        #print(f"end_date: {end_date}, end_time: {end_time}")
+        try:
+            # 展開 plot_data
+            # example: plot_data[station_name] = [[datetime, [20個溫度], [電壓、電流、功率、累積功率]]]
+            # plot_data-工位1: [datetime.datetime(2025, 5, 21, 9, 38, 4, 915350), [-11.6, -13.2, 29.9, -17.9, -14.3, -13.1, -10.2, 30.0, 29.9, 29.9, 29.7, 29.8, 29.9, 29.8, 29.8, 29.9, 29.9, 29.9, 30.0, 29.9], [110.02, 0.7605, 44.0, 27.513]]
+            records = []
+            for row in self.plot_data[station_name]:
+                dt = row[0]
+                temps = row[1]  # 20個溫度
+                power = row[2]  # list[電壓、電流、功率、累積功率]
+                record = {
+                    "datetime": dt,
+                }
+                # 加入溫度
+                for i in range(20):
+                    record[f"Ch{i+1}"] = temps[i] if temps and i < len(temps) else None
+                # 加入電力
+                record["功率"] = power[2]
+                record["累積功率"] = power[3]
+                records.append(record)
+            #print(f"records: {records}")
+            # 轉換為 DataFrame
+            df = pd.DataFrame(records)
+            # 轉換 datetime 欄位為 datetime 格式
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            # 設定 datetime 為索引
+            df.set_index("datetime", inplace=True)
+            # 設定開始與結束時間
+            df = df.loc[start_datetime:end_datetime]
+            # 計算 start 和 end 之間的分鐘數
+            time_diff = round((end_datetime - start_datetime).total_seconds() / 60, 1)
+            #print(f"時間差: {time_diff} 分鐘")
+            # 計算平均值
+            # 只計算非 NaN 欄位的平均值，並過濾掉全部為 NaN 的欄位
+            # 排除 '功率' 和 '累積功率' 欄位
+            temp_cols = [col for col in df.columns if col not in ['功率', '累積功率']]
+            avg_temp = df[temp_cols].loc[:, df[temp_cols].notna().any()].mean().round(1)
+            avg_power = round(df["功率"].mean(), 1)
+            #print(f"平均溫度: {avg_temp}")
+            #print(f"平均功率: {avg_power}")
+             # 計算電力啟停周期,大於 1W才算啟動
+            power_column = '功率'
+            if power_column in df.columns:
                 # 確保正確建立 power_on 欄位
-                filtered_df.loc[:, 'power_on'] = filtered_df[power_column] >= 3
-
+                df.loc[:, 'power_on'] = df[power_column] >= 3
                 # 計算啟停周期次數
-                power_cycles = int(filtered_df['power_on'].astype(int).diff().fillna(0).abs().sum() // 2)
-
+                power_cycles = int(df['power_on'].astype(int).diff().fillna(0).abs().sum() // 2)
                 # 計算大於等於3W和小於3W的週期數，排除頭尾兩個周期
-                mask = filtered_df['power_on']
+                mask = df['power_on']
                 groups = (mask != mask.shift()).cumsum()
                 segments = pd.DataFrame({
                     '狀態': mask,
                     '區段編號': groups,
-                    '時間': filtered_df['datetime']
+                    '時間': df.index
                 }).groupby(['區段編號', '狀態']).agg({'時間': ['min', 'max']}).reset_index()
 
                 # 排除頭尾兩個周期
@@ -1587,95 +1483,126 @@ class App:
                     above_percentage = (above_avg_time / (above_avg_time + below_avg_time)) * 100
                 else:
                     above_percentage = 0
-            else:
-                power_cycles = "無法計算，缺少 P(W) 欄位"
-                
-            # 計算 WP(Wh) 欄位的差值
-            wp_column = 'WP(Wh)'
-            if wp_column in filtered_df.columns:
-                wp_difference = filtered_df[wp_column].iloc[-1] - filtered_df[wp_column].iloc[0]
+                #print(f"啟動次數: {power_cycles}, 大於等於3W的週期數: {above_count}, 小於3W的週期數: {below_count}")
+                #print(f"大於等於3W的平均時間: {above_avg_time:.2f} 分鐘, 小於3W的平均時間: {below_avg_time:.2f} 分鐘")
+                        # 計算 WP(Wh) 欄位的差值
+            wp_column = '累積功率'
+            if wp_column in df.columns:
+                wp_difference = df[wp_column].iloc[-1] - df[wp_column].iloc[0]
                 
                 # 使用線性法推算 24 小時的差值
-                total_seconds = (filtered_df['datetime'].iloc[-1] - filtered_df['datetime'].iloc[0]).total_seconds()
+                total_seconds = (df.index[-1] - df.index[0]).total_seconds()
                 if (total_seconds > 0):
-                    wp_24h_difference = (wp_difference / total_seconds) * (24 * 3600)
+                    wp_24h_difference = round((wp_difference / total_seconds) * (24 * 3600),1)
                 else:
-                    wp_24h_difference = "無法計算，時間範圍不足"
-            else:
-                wp_difference = "無法計算，缺少 WP(Wh) 欄位"
-                wp_24h_difference = "無法計算，缺少 WP(Wh) 欄位"
-            
+                    wp_24h_difference = 0
+            #print(f"WP(Wh) 差值: {wp_difference}, 24 小時的差值: {wp_24h_difference}")
+
             # 計算能耗
-            vf_entry = getattr(self, f"{station_name}_vf_entry", None) # 冷凍室容積(L)
-            vr_entry = getattr(self, f"{station_name}_vr_entry", None) # 冷藏室容積(L)
-            fan_type = getattr(self, f"{station_name}_fan_type_var", {}).get()  # 取得風扇類型的狀態
+            vf_entry = getattr(self, f"{station_name}_vf_entry", None)
+            vr_entry = getattr(self, f"{station_name}_vr_entry", None)
+            fan_type_var = getattr(self, f"{station_name}_fan_type_var", None)
             vf = float(vf_entry.get()) if vf_entry and vf_entry.get().isdigit() else 0
             vr = float(vr_entry.get()) if vr_entry and vr_entry.get().isdigit() else 0
-            fridge_temp = 3 # 冷藏室溫度
-            freezer_temp = -18 # 冷凍室溫度
-            energy_calculator = EnergyCalculator()
+            fan_type_var = getattr(self, f"{station_name}_fan_type_var", None)
+            fan_type = fan_type_var.get() if fan_type_var is not None else 0  # 取得風扇類型的狀態
+            #取得snapshot頁面上的溫度設定
+            temp_f_entry = getattr(self, f"{station_name}_temp_f_entry", None)
+            temp_r_entry = getattr(self, f"{station_name}_temp_r_entry", None)
+            def is_float(val):
+                try:
+                    float(val)
+                    return True
+                except (ValueError, TypeError):
+                    return False
+            temp_f = float(temp_f_entry.get()) if temp_f_entry and is_float(temp_f_entry.get()) else 0
+            temp_r = float(temp_r_entry.get()) if temp_r_entry and is_float(temp_r_entry.get()) else 0
+            #print(f"vf: {vf}, vr: {vr}, fan_type: {fan_type}")
+            #print(f"temp_f: {temp_f}, temp_r: {temp_r}")
+            ef = EnergyCalculator()
             if isinstance(wp_24h_difference, (int, float)) and vf > 0 and vr > 0:
-                daily_consumption = wp_24h_difference / 1000  # 將 Wh 轉換為 kWh
+                daily_consumption = round(wp_24h_difference / 1000, 3)  # 將 Wh 轉換為 kWh
+                #print(f"每日耗電量: {daily_consumption} kWh")
                 # 計算
-                results = energy_calculator.calculate(vf, vr, daily_consumption, fridge_temp, freezer_temp, fan_type)
-                # 提取結果
-                if results:
-                    # 打印結果
-                    print("冰箱能耗計算結果:")
-                    for key, value in results.items():
-                        print(f"{key}: {value}")
+                results = ef.calculate(vf, vr, daily_consumption, temp_f, temp_r, fan_type)
+                print(f"能耗計算結果: {results}")
             else:
                 results = None
                 print("無耗電量數據,無法計算能耗")
 
-                
-            
-
             # 顯示結果
-            report_text.delete(1.0, tk.END)  # 清空文字框
-            report_text.insert(tk.END, f"統計範圍：{start_datetime} ~ {end_datetime}\n")
-            report_text.insert(tk.END, "平均值計算：\n")
-            for column, avg in averages.items():
-                report_text.insert(tk.END, f"{column}: {avg:.2f}\n")
-            report_text.insert(tk.END, f"\nON / Off 周期次數：{power_cycles}\n")
-            report_text.insert(tk.END, f"On 的平均時間: {above_avg_time:.1f} 分\n" if above_count > 0 else "P(W) >= 3 的平均時間: 無資料\n")
-            report_text.insert(tk.END, f"Off 的平均時間: {below_avg_time:.1f} 分\n" if below_count > 0 else "P(W) < 3 的平均時間: 無資料\n")
-            report_text.insert(tk.END, f"On / Off 百分比: {above_percentage:.2f}%\n")
-            report_text.insert(tk.END, f"\n電力消耗：{wp_difference:.2f} w / {minutes_difference} 分\n")
-            report_text.insert(tk.END, f"24 小時電力消耗：{wp_24h_difference:.1f} w\n")
-            report_text.insert(tk.END, f"\n能耗計算：\n")
-            if results:
-                for key, value in results.items():
-                    report_text.insert(tk.END, f"{key}: {value}\n")
-            else:
-                report_text.insert(tk.END, "無法計算能耗，請檢查數據\n")
+            report_text = getattr(self, f"{station_name}_report_text", None)
+            if report_text is not None:
+                report_text.delete(1.0, tk.END)  # 清空文字框
+                report_text.insert(tk.END, f"統計範圍：{start_datetime} ~ {end_datetime}\n")
+                # 整理 avg_temp，移除 dtype 行
+                avg_temp_str = "\n".join([f"ch{idx+1}: {val}" for idx, val in enumerate(avg_temp.values)])
+                report_text.insert(tk.END, f"平均溫度:\n{avg_temp_str}\n")
+                report_text.insert(tk.END, f"平均功率: {avg_power:.2f} W\n")
+                report_text.insert(tk.END, f"\nON / Off 周期次數：{power_cycles}\n")
+                report_text.insert(tk.END, f"On 的平均時間: {above_avg_time:.1f} 分\n" if above_count > 0 else "P(W) >= 3 的平均時間: 無資料\n")
+                report_text.insert(tk.END, f"Off 的平均時間: {below_avg_time:.1f} 分\n" if below_count > 0 else "P(W) < 3 的平均時間: 無資料\n")
+                report_text.insert(tk.END, f"On / Off 百分比: {above_percentage:.2f}%\n")
+                report_text.insert(tk.END, f"\n電力消耗：{wp_difference:.2f} w / {time_diff} 分\n")
+                report_text.insert(tk.END, f"24 小時電力消耗：{wp_24h_difference:.1f} w\n")
+                report_text.insert(tk.END, f"\n能耗計算：\n")
+                if results:
+                    for key, value in results.items():
+                        report_text.insert(tk.END, f"{key}: {value}\n")
+                else:
+                    report_text.insert(tk.END, "無法計算能耗，請檢查數據\n")
+
+
 
         except Exception as e:
-            tk.messagebox.showerror("錯誤", f"計算報告時發生錯誤: {e}")
-            #print(f"計算報告時發生錯誤: {e}")
-            log_error(f"計算報告時發生錯誤: {e}")
+            print(f"Error in snapshot_report: {e}")
+            log_error(f"Error in snapshot_report: {e}")
+            return
 
-    def start_plot_update(self, station_name):
-        """啟動圖表更新的定時器"""
-        if self.collecting.get(station_name, False) and not self.pause_plot:
-            self.update_plot(station_name)
-        # 每5秒調用一次
-        self.root.after(5000, self.start_plot_update, station_name)
+    def save_results(self, station_name):
+        """儲存報告"""
+        report_text = getattr(self, f"{station_name}_report_text", None)
+        if report_text:
+            file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+            if file_path:
+                with open(file_path, "w") as file:
+                    file.write(report_text.get(1.0, tk.END))
+                messagebox.showinfo("儲存成功", f"報告已儲存到 {file_path}")
+            else:
+                messagebox.showwarning("儲存失敗", "未選擇檔案路徑")
 
+    def on_closing(self):
+        """關閉視窗時的處理"""
+        # 檢查是否有工位正在啟動
+        active_stations = [station for station, is_collecting in self.collecting.items() if is_collecting]
+        if active_stations:
+            messagebox.showwarning(
+                "警告", 
+                f"以下工位正在收集數據，請先停止數據收集再退出程序：\n{', '.join(active_stations)}"
+            )
+            log_info(f"以下工位正在收集數據，請先停止數據收集再退出程序：\n{', '.join(active_stations)}")
+        else:
+            self.root.destroy()
+            log_info("程式已關閉")
+
+    def show_error_dialog(self, title: str, message: str):
+        """顯示錯誤對話框"""
+        messagebox.showerror(title, message)
+        print(f"{title}: {message}")
+        log_error(f"{title}: {message}")
+    
 if __name__ == "__main__":
     log_info("程式啟動")
     # 支援 pyinstaller 打包時找資源
     def resource_path(relative_path):
-        try:
-            base_path = sys._MEIPASS  # PyInstaller 打包後會存在這個暫存路徑
-        except Exception:
-            base_path = os.path.abspath(".")
+        base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
         return os.path.join(base_path, relative_path)
     
     now = datetime.now()
+    AppTitle = "SAMPO RD2 Lab Data Collection 1_0"
     specific_date = datetime(2025, 12, 31)
     if now > specific_date:
-        tk.messagebox.showinfo("Info", " SAMPO GX20/PW3335 Data Collection !!")
+        messagebox.showinfo("Info", AppTitle)
         sys.exit()
 
     root = tk.Tk()
@@ -1697,22 +1624,15 @@ if __name__ == "__main__":
     root.update_idletasks()
     ws = root.winfo_screenwidth()
     hs = root.winfo_screenheight()
-
-
-    AppTitle = "SAMPO GX20/PW3335 Data Collection 1_0"
+    
     ModelID = AppTitle + now.strftime("%Y%m%d_%H%M%S")
-    # 讓工作列圖示正確顯示
-    windll.shell32.SetCurrentProcessExplicitAppUserModelID(ModelID)
-    # 設定執行檔的路徑變數
-    exe_path = os.path.dirname(os.path.abspath(__file__))
-    ico_file = exe_path + "\\GX20_PW3335.ico"
-    if os.path.exists(ico_file):
-        ico_path = resource_path(ico_file)
-        root.iconbitmap(ico_path)  # 設定視窗圖示
-    else:
-        #print(f"Icon file not found: {ico_file}")
-        log_info(f"Icon file not found: {ico_file}")
-
+    
     root.title(AppTitle)
-    app = App(root)
+    try:
+        root.iconbitmap(resource_path('favicon.ico'))
+    except:
+        print("Icon not found, using default icon.")
+        pass
+
+    app = App(root, ws, hs)
     root.mainloop()
