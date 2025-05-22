@@ -39,7 +39,7 @@ import tempfile
 plt.rcParams['font.family'] = 'Microsoft JhengHei'
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-Debug_mode = False  # 設定為 True 以啟用除錯模式
+Debug_mode = True  # 設定為 True 以啟用除錯模式
 
 # 確保 LOG 檔案儲存到執行檔所在目錄或臨時目錄
 if getattr(sys, 'frozen', False):  # 如果是 pyinstaller 打包的執行檔
@@ -498,6 +498,42 @@ class DraggableLine:
 
 class App:
     def __init__(self, root, ws, hs):
+        # 讓背景色也套用到主 root
+        root.configure(bg='#e3f2fd')
+        # --- 美化介面：Notebook 標籤與 Frame 樣式 ---
+        style = ttk.Style()
+        # 設定主題（可選 'clam', 'alt', 'default', 'classic'）
+        style.theme_use('clam')
+        # Notebook 標籤樣式
+        style.configure('TNotebook.Tab', font=('Microsoft JhengHei', 12, 'bold'), padding=[12, 6], background='#e0e7ef', foreground='#333')
+        style.map('TNotebook.Tab',
+            background=[('selected', '#1976d2'), ('active', '#90caf9')],
+            foreground=[('selected', 'white'), ('active', '#1976d2')]
+        )
+        # Notebook 本體底色
+        style.configure('TNotebook', background='#f5f7fa', borderwidth=0)
+        # Frame 樣式
+        style.configure('TFrame', background='#f5f7fa')
+        # LabelFrame 樣式
+        style.configure('TLabelframe', background='#f5f7fa', font=('Microsoft JhengHei', 11, 'bold'))
+        style.configure('TLabelframe.Label', background='#1976d2', foreground='white', font=('Microsoft JhengHei', 11, 'bold'))
+        # Button 樣式
+        style.configure('TButton', font=('Microsoft JhengHei', 11), padding=6)
+        # Entry 樣式
+        style.configure('TEntry', font=('Microsoft JhengHei', 11))
+        # Checkbutton 樣式（讓底色與 LabelFrame 一致）
+        style.configure('TCheckbutton', background='#f5f7fa', font=('Microsoft JhengHei', 11))
+        # Combobox 樣式
+        style.configure('TCombobox', font=('Microsoft JhengHei', 11))
+        # Label 樣式（讓 ttk.Label 也有白底）
+        style.configure('TLabel', background='#f5f7fa', font=('Microsoft JhengHei', 11))
+        # Entry 樣式（白底）
+        style.configure('TEntry', fieldbackground='white', background='white', foreground='#222')
+        # 讓 tk.Entry 也有白底
+        #self.root.option_add('*Entry.Background', 'white')
+        #self.root.option_add('*Entry.Foreground', '#222')
+        # --- END 美化介面 ---
+
         self.font_prop = FontProperties(family="Microsoft JhengHei", size=10)
         self.root = root
         self.ws = ws
@@ -516,11 +552,7 @@ class App:
 
         self.collection_threads = {}
         self.stop_events = {}  # 新增：每個工位一個 stop event
-        # 為每個工位創建獨立的數據存儲
-        #for i in range(1, 7):
-            # 每個工位圖表的資料 [[datetime],[20個溫度的值],[4個電力值]]
-            #self.plot_data[i] = [[],[],[]]
-
+ 
         # 初始化 Notebook（頁面容器）
         self.notebook = ttk.Notebook(root)
         self.notebook.place(x=5, y=5, width=self.ws-10, height=self.hs-10)
@@ -778,9 +810,6 @@ class App:
             if len(self.get_enabled_channel(station_name)) < 1:
                 self.show_error_dialog("頻道選擇錯誤", "請至少勾選一個頻道！")
                 return
-            
-            #log_info(f"{station_name}勾選頻道: {self.get_enabled_channel(station_name)}")
-            #print(f"{station_name}勾選頻道:{self.get_enabled_channel(station_name)}")
             
             # 啟用 stop 按鈕，禁用 start 按鈕
             start_button = getattr(self, f"{station_name}_start_button", None)
@@ -1043,7 +1072,7 @@ class App:
         # calculate button
         calculate_button = ttk.Button(frame, text="平均", command=lambda: self.calculate_average(station_name), width=6)
         calculate_button.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
-        figure = Figure(figsize=(16, 8), dpi=80)
+        figure = Figure(figsize=(16, 8), dpi=80, facecolor='#f5f7fa')
         gs = figure.add_gridspec(2, 1, height_ratios=[7, 3])  # 7:3 高度比例
         canvas = FigureCanvasTkAgg(figure, master=frame)
         canvas_widget = canvas.get_tk_widget()
@@ -1070,7 +1099,7 @@ class App:
         toolbar.update()
 
         # Memo text box
-        memo_text = tk.Text(frame, height=4, width=100, wrap="word")
+        memo_text = tk.Text(frame, height=3, width=100, wrap="word")
         memo_text.grid(row=5, column=2, padx=5, pady=5,sticky="e")
         memo_text.insert(tk.END, "備註:\n")
         
@@ -1205,7 +1234,7 @@ class App:
         if len(self.plot_data.get(station_name, [])) < 10:
             self.show_error_dialog("資料不足", "資料筆數不足 10 筆，無法暫停/分析。")
             return
-        """切換暫停/繼續圖表更新，暫停時於X軸起訖加axvline，繼續時隱藏，並可拖曳vline"""
+        # 切換暫停/繼續圖表更新，暫停時於X軸起訖加axvline，繼續時隱藏，並可拖曳vline
         pause_button = getattr(self, f"{station_name}_pause_button", None)
         ax_temp = getattr(self, f"{station_name}_ax_temp", None)
         ax_power = getattr(self, f"{station_name}_ax_power", None)
