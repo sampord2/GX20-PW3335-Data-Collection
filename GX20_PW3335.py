@@ -39,7 +39,7 @@ import tempfile
 plt.rcParams['font.family'] = 'Microsoft JhengHei'
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-Debug_mode = True  # 設定為 True 以啟用除錯模式
+Debug_mode = False  # 設定為 True 以啟用除錯模式
 
 # 確保 LOG 檔案儲存到執行檔所在目錄或臨時目錄
 if getattr(sys, 'frozen', False):  # 如果是 pyinstaller 打包的執行檔
@@ -498,6 +498,65 @@ class DraggableLine:
 
 class App:
     def __init__(self, root, ws, hs):
+        # --- 主題顏色 ---
+        them_colors = {
+            "Ocean Deep": [
+                "#EAEFEF",  # 0: 白
+                "#EAEFEF",  # 1: 淺藍
+                "#B8CFCE",  # 2:
+                "#7F8CAA",  # 3: 
+                "#333446",  # 4: 
+                "#333446",  # 5: 深藍
+                "#333446"   # 6: 極深色
+            ],
+            "Serene Greens": [
+                "#f4faee",  # 0: 白
+                "#5a7939",  # 1: 淺綠
+                "#4c6d3b",  # 2:
+                "#395a2b",  # 3: 
+                "#2c4521",  # 4: 
+                "#293c16",  # 5: 深綠
+                "#1d2e17"   # 6: 極深色
+            ]
+        }
+# 主背景
+        root.configure(bg=them_colors["Ocean Deep"][5])
+        # Notebook 標籤樣式
+        style = ttk.Style()
+        style.configure('TNotebook.Tab', font=('Microsoft JhengHei', 13, 'bold'), padding=[16, 5],
+                        background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][2], relief='flat')
+        style.map('TNotebook.Tab',
+        background=[('selected', them_colors["Ocean Deep"][5]), ('active', them_colors["Ocean Deep"][4]), ('!selected', them_colors["Ocean Deep"][4])],
+        foreground=[('selected', them_colors["Ocean Deep"][4]), ('active', them_colors["Ocean Deep"][3]), ('!selected', them_colors["Ocean Deep"][2])]
+        )
+        # Notebook 本體底色
+        style.configure('TNotebook', background=them_colors["Ocean Deep"][4], borderwidth=0)
+        # Frame 樣式
+        style.configure('TFrame', background=them_colors["Ocean Deep"][4])
+        # LabelFrame 樣式
+        style.configure('TLabelframe', background=them_colors["Ocean Deep"][4], font=('Microsoft JhengHei', 11, 'bold'))
+        style.configure('TLabelframe.Label', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1], font=('Microsoft JhengHei', 11, 'bold'))
+        # Button 樣式
+        style.configure('TButton', font=('Microsoft JhengHei', 11), padding=6, background=them_colors["Ocean Deep"][0], foreground=them_colors["Ocean Deep"][4])
+        style.map('TButton', background=[('active', them_colors["Ocean Deep"][4])], foreground=[('active', them_colors["Ocean Deep"][4])])
+        # Entry 樣式（文字框底色加點藍灰色，提升可視性）
+        style.configure('TEntry', font=('Microsoft JhengHei', 11),
+                        fieldbackground='#263445', background='#263445', foreground=them_colors["Ocean Deep"][1],
+                        bordercolor=them_colors["Ocean Deep"][4], lightcolor=them_colors["Ocean Deep"][0], darkcolor=them_colors["Ocean Deep"][0])
+        # Checkbutton 樣式
+        style.configure('TCheckbutton', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1], font=('Microsoft JhengHei', 11))
+        # Combobox 樣式
+        style.configure('TCombobox', font=('Microsoft JhengHei', 11), fieldbackground=them_colors["Ocean Deep"][0], background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1])
+        # Label 樣式
+        style.configure('TLabel', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][0], font=('Microsoft JhengHei', 11))
+        # tk.Entry 也套用同色
+        root.option_add('*Entry.Background', them_colors["Ocean Deep"][4])
+        root.option_add('*Entry.Foreground', them_colors["Ocean Deep"][4])
+        # Matplotlib Figure 底色
+        self.figure_facecolor = them_colors["Ocean Deep"][1]
+        self.figure_temp_color = them_colors["Ocean Deep"][0]
+        self.figure_power_color = them_colors["Ocean Deep"][0]
+
         self.font_prop = FontProperties(family="Microsoft JhengHei", size=10)
         self.root = root
         self.ws = ws
@@ -510,20 +569,13 @@ class App:
         self.collecting = {}
         self.plot_data = {}
         self.x_start = {}
-        #self.x_start = {datetime.now()}
         self.x_end = {}
-        #self.x_end = datetime.now() - timedelta(minutes=30)
-
         self.collection_threads = {}
-        self.stop_events = {}  # 新增：每個工位一個 stop event
-        # 為每個工位創建獨立的數據存儲
-        #for i in range(1, 7):
-            # 每個工位圖表的資料 [[datetime],[20個溫度的值],[4個電力值]]
-            #self.plot_data[i] = [[],[],[]]
-
+        self.stop_events = {}  # 每個工位一個 stop event
+ 
         # 初始化 Notebook（頁面容器）
         self.notebook = ttk.Notebook(root)
-        self.notebook.place(x=5, y=5, width=self.ws-10, height=self.hs-10)
+        self.notebook.place(x=5, y=5, width=self.ws-5, height=self.hs-5)
         # 創建 6 個頁面（工位 1 到工位 6）
         self.frames = {}
         for i in range(1, 7):
@@ -638,20 +690,20 @@ class App:
             # File path selection
             ttk.Label(file_frame, text="儲存路徑:").grid(row=0, column=0, padx=5, pady=5)
             file_path_var = tk.StringVar(value="D:/測試紀錄")  # 設定預設路徑
-            file_path_entry = ttk.Entry(file_frame, textvariable=file_path_var, width=30)
+            file_path_entry = ttk.Entry(file_frame, textvariable=file_path_var, width=30, foreground="black")
             file_path_entry.grid(row=0, column=1, padx=5, pady=5)
             browse_button = ttk.Button(file_frame, text="Browse", command=lambda: self.browse_file(file_path_var))
             browse_button.grid(row=0, column=2, padx=5, pady=5)
 
             ttk.Label(file_frame, text="檔名:").grid(row=1, column=0, padx=5, pady=5)
             file_name_var = tk.StringVar(value="*.csv") 
-            file_name_entry = ttk.Entry(file_frame, textvariable=file_name_var, width=30, state="readonly")
+            file_name_entry = ttk.Entry(file_frame, textvariable=file_name_var, width=30, state="readonly", foreground="black")
             file_name_entry.grid(row=1, column=1, padx=5, pady=5)
 
             # Frequency selection
             ttk.Label(file_frame, text="記錄頻率(sec):").grid(row=2, column=0, padx=5, pady=5)
             frequency_var = tk.IntVar(value=10)
-            frequency_menu = ttk.Combobox(file_frame, textvariable=frequency_var, state="readonly")
+            frequency_menu = ttk.Combobox(file_frame, textvariable=frequency_var, state="readonly", foreground="black")
             frequency_menu['values'] = [10, 60, 180, 300]
             frequency_menu.grid(row=2, column=1, padx=5, pady=5)
 
@@ -673,15 +725,15 @@ class App:
             # 新增一個frame,設定冰箱規格
             ttk.Label(prod_frame, text="機種:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
             model_entry_var = tk.StringVar(value="NA")
-            model_entry = ttk.Entry(prod_frame, width=30, textvariable=model_entry_var)
+            model_entry = ttk.Entry(prod_frame, width=30, textvariable=model_entry_var, foreground="black")
             model_entry.grid(row=0, column=1, padx=5, pady=5)
             ttk.Label(prod_frame, text="冷凍庫容量(L):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
             vf_entry_var = tk.StringVar(value="150")
-            vf_entry = ttk.Entry(prod_frame, width=10, textvariable=vf_entry_var)
+            vf_entry = ttk.Entry(prod_frame, width=10, textvariable=vf_entry_var, foreground="black")
             vf_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
             ttk.Label(prod_frame, text="冷藏庫容量:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
             vr_entry_var = tk.StringVar(value="350")
-            vr_entry = ttk.Entry(prod_frame, width=10, textvariable=vr_entry_var)
+            vr_entry = ttk.Entry(prod_frame, width=10, textvariable=vr_entry_var, foreground="black")
             vr_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
             # Fan type checkbox
             fan_type_var = tk.IntVar(value=1)  # 0: unchecked, 1: checked
@@ -715,7 +767,7 @@ class App:
                 ch_label.grid(row=row, column=col + 1, padx=5, pady=5)
 
                 # 別名輸入框
-                alias_entry = ttk.Entry(channel_frame, width=8)
+                alias_entry = ttk.Entry(channel_frame, width=8, foreground="black")
                 alias_entry.grid(row=row, column=col + 2, padx=2, sticky='ew')
                 ch_aliases.append(alias_entry)
 
@@ -778,9 +830,6 @@ class App:
             if len(self.get_enabled_channel(station_name)) < 1:
                 self.show_error_dialog("頻道選擇錯誤", "請至少勾選一個頻道！")
                 return
-            
-            #log_info(f"{station_name}勾選頻道: {self.get_enabled_channel(station_name)}")
-            #print(f"{station_name}勾選頻道:{self.get_enabled_channel(station_name)}")
             
             # 啟用 stop 按鈕，禁用 start 按鈕
             start_button = getattr(self, f"{station_name}_start_button", None)
@@ -971,7 +1020,9 @@ class App:
 
                         date_str = now.strftime("%Y-%m-%d")
                         time_str = now.strftime("%H:%M:%S")
-                        writer.writerow([date_str, time_str] + self.gx20_data_dict[station_name] + power_data)
+                        # 寫入csv的內容由self.gx20_data_dict[station_name]改為temp_data, 頻道內數據為99.9的位置,改為空值
+
+                        writer.writerow([date_str, time_str] + temp_data + power_data)
                         #print(f"collect_data: plot_data{station_name}: {self.plot_data[station_name][-1]}")
                         
                         stop_event = self.stop_events.get(station_name)
@@ -991,7 +1042,7 @@ class App:
         xbar_frame.grid(row=0, column=0, columnspan=2, padx=20, pady=5, sticky="nw")
         # X 軸範圍選擇
         x_axis_range_var = tk.StringVar(value="30min")
-        x_axis_range_menu = ttk.Combobox(xbar_frame, textvariable=x_axis_range_var, state="readonly", width=6)
+        x_axis_range_menu = ttk.Combobox(xbar_frame, textvariable=x_axis_range_var, state="readonly", width=6, foreground="black")
         x_axis_range_menu['values'] = ["30min", "3hrs", "12hrs", "24hrs"]
         x_axis_range_menu.grid(row=0, column=0, padx=1, pady=5)
         
@@ -1041,13 +1092,13 @@ class App:
         # calculate button
         calculate_button = ttk.Button(frame, text="平均", command=lambda: self.calculate_average(station_name), width=6)
         calculate_button.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
-        figure = Figure(figsize=(16, 8), dpi=80)
+        figure = Figure(figsize=(16, 8), dpi=80, facecolor=self.figure_facecolor)
         gs = figure.add_gridspec(2, 1, height_ratios=[7, 3])  # 7:3 高度比例
         canvas = FigureCanvasTkAgg(figure, master=frame)
         canvas_widget = canvas.get_tk_widget()
         canvas_widget.grid(row=0, rowspan= 5, column=2, padx=5, pady=5)
-        ax_temp = figure.add_subplot(gs[0, 0], facecolor='lightcyan')
-        ax_power = figure.add_subplot(gs[1, 0], sharex=ax_temp, facecolor='lightyellow')
+        ax_temp = figure.add_subplot(gs[0, 0], facecolor=self.figure_temp_color)
+        ax_power = figure.add_subplot(gs[1, 0], sharex=ax_temp, facecolor=self.figure_power_color)
         # 減少左右空白
         figure.subplots_adjust(left=0.035, right=0.98, top=0.95, bottom=0.05, hspace=0.1)
 
@@ -1068,7 +1119,7 @@ class App:
         toolbar.update()
 
         # Memo text box
-        memo_text = tk.Text(frame, height=4, width=120, wrap="word")
+        memo_text = tk.Text(frame, height=3, width=100, wrap="word", foreground="black")
         memo_text.grid(row=5, column=2, padx=5, pady=5,sticky="e")
         memo_text.insert(tk.END, "備註:\n")
         
@@ -1128,6 +1179,7 @@ class App:
             ax_power.clear()
             # 設置 X 軸範圍
             x_axis_range = x_axis_range_var.get() if x_axis_range_var is not None else "30min"
+            #print(f"{station_name} - X 軸範圍: {x_axis_range}")
             if x_axis_range == "30min":
                 time_delta = pd.Timedelta(minutes=30)
             elif x_axis_range == "3hrs":
@@ -1140,10 +1192,14 @@ class App:
                 time_delta = pd.Timedelta(minutes=30)
 
             # 設置 X 軸範圍
-            self.x_start[station_name] = plot_data[0][0] - time_delta
+            self.x_start[station_name] = plot_data[-1][0] - time_delta
             self.x_end[station_name] = plot_data[-1][0]
             ax_temp.set_xlim(self.x_start[station_name], self.x_end[station_name])
             ax_power.set_xlim(self.x_start[station_name], self.x_end[station_name])
+
+            # 設定 X 軸顯示日期時間格式
+            #ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M'))
+            ax_power.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M'))
 
             # 設置 Y 軸格線
             ax_temp.yaxis.grid(True)
@@ -1156,10 +1212,10 @@ class App:
                 label = alias if alias else f"Ch{channel_num}"
                 line, = ax_temp.plot([data[0] for data in plot_data], temp_values, label=label)
                 artists.append(line)
-            # 只顯示啟用的頻道圖例
+            # 只顯示啟用的頻道圖例, 若沒設定alias則顯示頻道index
             if active_ch_list:
                 legend = ax_temp.legend(
-                    [alias if alias else f"Ch{channel_num}" for _, alias, channel_num in active_ch_list],
+                    [f"{index+1}:{alias}" if alias else f"ch{index+1}" for index, alias, _ in active_ch_list],
                     loc="upper left",
                     prop=self.font_prop)
                 artists.append(legend)
@@ -1177,12 +1233,35 @@ class App:
             dt = dt.replace(tzinfo=None)
         self.show_temp_at_datetime(station_name, dt)
 
+
+    def show_temp_at_datetime(self, station_name, dt):
+        """根據 datetime 找出最接近的溫度資料，顯示在 channel_labels"""
+        plot_data = self.plot_data.get(station_name, [])
+        start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
+        start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
+        if not plot_data:
+            return
+        # 找到最接近 dt 的資料
+        closest = min(plot_data, key=lambda x: abs(x[0] - dt))
+        temps = closest[1]
+        channel_labels = self.plot_channel_labels.get(station_name, {})
+        for i, (ch_num) in enumerate(self.gx20_instance.channel_number[station_name]):
+            label = channel_labels.get(ch_num)
+            if label:
+                label.config(text=f"{temps[i]:.1f}" if temps[i] is not None else "--")
+        # 更新開始時間與結束時間
+        if start_date_entry and start_time_entry:
+            start_date_entry.delete(0, tk.END)
+            start_date_entry.insert(0, dt.strftime('%Y-%m-%d'))
+            start_time_entry.delete(0, tk.END)
+            start_time_entry.insert(0, dt.strftime('%H:%M:%S'))
+
     def toggle_pause_plot(self, station_name):
         # 檢查 plot_data 是否有 10 筆以上，否則停止程序
         if len(self.plot_data.get(station_name, [])) < 10:
             self.show_error_dialog("資料不足", "資料筆數不足 10 筆，無法暫停/分析。")
             return
-        """切換暫停/繼續圖表更新，暫停時於X軸起訖加axvline，繼續時隱藏，並可拖曳vline"""
+        # 切換暫停/繼續圖表更新，暫停時於X軸起訖加axvline，繼續時隱藏，並可拖曳vline
         pause_button = getattr(self, f"{station_name}_pause_button", None)
         ax_temp = getattr(self, f"{station_name}_ax_temp", None)
         ax_power = getattr(self, f"{station_name}_ax_power", None)
@@ -1282,22 +1361,7 @@ class App:
                     if canvas:
                         canvas.draw_idle()
     
-    
-
-    def show_temp_at_datetime(self, station_name, dt):
-        """根據 datetime 找出最接近的溫度資料，顯示在 channel_labels"""
-        plot_data = self.plot_data.get(station_name, [])
-        if not plot_data:
-            return
-        # 找到最接近 dt 的資料
-        closest = min(plot_data, key=lambda x: abs(x[0] - dt))
-        temps = closest[1]
-        channel_labels = self.plot_channel_labels.get(station_name, {})
-        for i, (ch_num) in enumerate(self.gx20_instance.channel_number[station_name]):
-            label = channel_labels.get(ch_num)
-            if label:
-                label.config(text=f"{temps[i]:.1f}" if temps[i] is not None else "--")
-
+   
     def calculate_average(self, station_name):
         """計算平均值"""
         start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
@@ -1359,23 +1423,22 @@ class App:
     def setup_snapshot_page(self, frame, station_name):
         """設置 REPORT 頁面的控件"""
         # 能耗計算用欄位
-        model_frame = tk.Frame(frame)  # 使用 Frame 包含文字框
+        model_frame = ttk.LabelFrame(frame, text="溫度設定")  # 使用 Frame 包含文字框
         model_frame.grid(row=0, column=0, padx=5, pady=10, sticky="w")
-        tk.Label(model_frame, text="溫度設定:").grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="w")
-        tk.Label(model_frame, text="F:").grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(model_frame, text="F:").grid(row=2, column=1, padx=5, pady=5, sticky="w")
         temp_f_entry_var = tk.StringVar(value="-18.0")
-        temp_f_entry = tk.Entry(model_frame, width=5, textvariable=temp_f_entry_var)
+        temp_f_entry = ttk.Entry(model_frame, width=5, textvariable=temp_f_entry_var, foreground="black")
         temp_f_entry.grid(row=2, column=2, padx=5, pady=5, sticky="w")
-        tk.Label(model_frame, text="R:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
+        ttk.Label(model_frame, text="R:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
         temp_r_entry_var = tk.StringVar(value="3.0")
-        temp_r_entry = tk.Entry(model_frame, width=5, textvariable=temp_r_entry_var)
+        temp_r_entry = ttk.Entry(model_frame, width=5, textvariable=temp_r_entry_var, foreground="black")
         temp_r_entry.grid(row=2, column=4, padx=5, pady=5, sticky="w")
         
-        tk.Button(frame, text="計算平均值", command=lambda: self.snapshot_report(station_name)).grid(row=0, column=1, pady=10)
-        tk.Button(frame, text="儲存結果", command=lambda: self.save_results(station_name)).grid(row=0, column=2, pady=10)
+        ttk.Button(frame, text="計算平均值", command=lambda: self.snapshot_report(station_name)).grid(row=0, column=1, pady=10)
+        ttk.Button(frame, text="儲存結果", command=lambda: self.save_results(station_name)).grid(row=0, column=2, pady=10)
 
 
-        report_text = tk.Text(frame, height=30, width=100, wrap="word")
+        report_text = tk.Text(frame, height=30, width=100, wrap="word", foreground="black")
         report_text.grid(row=1, column=0, columnspan=3, padx=5, pady=5)
         report_text.insert(tk.END, "NA\n")
         
