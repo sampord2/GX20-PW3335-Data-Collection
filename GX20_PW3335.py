@@ -39,7 +39,7 @@ import tempfile
 plt.rcParams['font.family'] = 'Microsoft JhengHei'
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-Debug_mode = True  # 設定為 True 以啟用除錯模式
+Debug_mode = False  # 設定為 True 以啟用除錯模式
 
 # 確保 LOG 檔案儲存到執行檔所在目錄或臨時目錄
 if getattr(sys, 'frozen', False):  # 如果是 pyinstaller 打包的執行檔
@@ -971,7 +971,9 @@ class App:
 
                         date_str = now.strftime("%Y-%m-%d")
                         time_str = now.strftime("%H:%M:%S")
-                        writer.writerow([date_str, time_str] + self.gx20_data_dict[station_name] + power_data)
+                        # 寫入csv的內容由self.gx20_data_dict[station_name]改為temp_data, 頻道內數據為99.9的位置,改為空值
+
+                        writer.writerow([date_str, time_str] + temp_data + power_data)
                         #print(f"collect_data: plot_data{station_name}: {self.plot_data[station_name][-1]}")
                         
                         stop_event = self.stop_events.get(station_name)
@@ -1068,7 +1070,7 @@ class App:
         toolbar.update()
 
         # Memo text box
-        memo_text = tk.Text(frame, height=4, width=120, wrap="word")
+        memo_text = tk.Text(frame, height=4, width=100, wrap="word")
         memo_text.grid(row=5, column=2, padx=5, pady=5,sticky="e")
         memo_text.insert(tk.END, "備註:\n")
         
@@ -1128,6 +1130,7 @@ class App:
             ax_power.clear()
             # 設置 X 軸範圍
             x_axis_range = x_axis_range_var.get() if x_axis_range_var is not None else "30min"
+            #print(f"{station_name} - X 軸範圍: {x_axis_range}")
             if x_axis_range == "30min":
                 time_delta = pd.Timedelta(minutes=30)
             elif x_axis_range == "3hrs":
@@ -1140,10 +1143,14 @@ class App:
                 time_delta = pd.Timedelta(minutes=30)
 
             # 設置 X 軸範圍
-            self.x_start[station_name] = plot_data[0][0] - time_delta
+            self.x_start[station_name] = plot_data[-1][0] - time_delta
             self.x_end[station_name] = plot_data[-1][0]
             ax_temp.set_xlim(self.x_start[station_name], self.x_end[station_name])
             ax_power.set_xlim(self.x_start[station_name], self.x_end[station_name])
+
+            # 設定 X 軸顯示日期時間格式
+            #ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M'))
+            ax_power.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M'))
 
             # 設置 Y 軸格線
             ax_temp.yaxis.grid(True)
@@ -1176,6 +1183,22 @@ class App:
         if dt.tzinfo is not None:
             dt = dt.replace(tzinfo=None)
         self.show_temp_at_datetime(station_name, dt)
+
+
+    def show_temp_at_datetime(self, station_name, dt):
+        """根據 datetime 找出最接近的溫度資料，顯示在 channel_labels"""
+        plot_data = self.plot_data.get(station_name, [])
+        if not plot_data:
+            return
+        # 找到最接近 dt 的資料
+        closest = min(plot_data, key=lambda x: abs(x[0] - dt))
+        temps = closest[1]
+        channel_labels = self.plot_channel_labels.get(station_name, {})
+        for i, (ch_num) in enumerate(self.gx20_instance.channel_number[station_name]):
+            label = channel_labels.get(ch_num)
+            if label:
+                label.config(text=f"{temps[i]:.1f}" if temps[i] is not None else "--")
+
 
     def toggle_pause_plot(self, station_name):
         # 檢查 plot_data 是否有 10 筆以上，否則停止程序
@@ -1282,22 +1305,7 @@ class App:
                     if canvas:
                         canvas.draw_idle()
     
-    
-
-    def show_temp_at_datetime(self, station_name, dt):
-        """根據 datetime 找出最接近的溫度資料，顯示在 channel_labels"""
-        plot_data = self.plot_data.get(station_name, [])
-        if not plot_data:
-            return
-        # 找到最接近 dt 的資料
-        closest = min(plot_data, key=lambda x: abs(x[0] - dt))
-        temps = closest[1]
-        channel_labels = self.plot_channel_labels.get(station_name, {})
-        for i, (ch_num) in enumerate(self.gx20_instance.channel_number[station_name]):
-            label = channel_labels.get(ch_num)
-            if label:
-                label.config(text=f"{temps[i]:.1f}" if temps[i] is not None else "--")
-
+   
     def calculate_average(self, station_name):
         """計算平均值"""
         start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
