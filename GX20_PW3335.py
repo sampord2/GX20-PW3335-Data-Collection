@@ -498,41 +498,55 @@ class DraggableLine:
 
 class App:
     def __init__(self, root, ws, hs):
-        # 讓背景色也套用到主 root
-        root.configure(bg='#e3f2fd')
-        # --- 美化介面：Notebook 標籤與 Frame 樣式 ---
-        style = ttk.Style()
-        # 設定主題（可選 'clam', 'alt', 'default', 'classic'）
-        style.theme_use('clam')
+        # --- 深色主題 Ocean Deep ---
+        them_colors = {
+            "Ocean Deep": [
+                "#dfe1e5",  # 0: 米白
+                "#abbdd2",  # 1: 淺藍
+                "#4a7dbf",  # 2:
+                "#2e4876",  # 3: 
+                "#192938",  # 4: 
+                "#0d0d0d",  # 5: 深藍
+                "#141414"   # 6: 極深色
+            ]
+        }
+        # 主背景
+        root.configure(bg=them_colors["Ocean Deep"][5])
         # Notebook 標籤樣式
-        style.configure('TNotebook.Tab', font=('Microsoft JhengHei', 12, 'bold'), padding=[12, 6], background='#e0e7ef', foreground='#333')
+        style = ttk.Style()
+        style.configure('TNotebook.Tab', font=('Microsoft JhengHei', 13, 'bold'), padding=[16, 5],
+                        background=them_colors["Ocean Deep"][5], foreground=them_colors["Ocean Deep"][2], relief='flat')
         style.map('TNotebook.Tab',
-            background=[('selected', '#1976d2'), ('active', '#90caf9')],
-            foreground=[('selected', 'white'), ('active', '#1976d2')]
+        background=[('selected', them_colors["Ocean Deep"][5]), ('active', them_colors["Ocean Deep"][4]), ('!selected', them_colors["Ocean Deep"][4])],
+        foreground=[('selected', them_colors["Ocean Deep"][4]), ('active', them_colors["Ocean Deep"][3]), ('!selected', them_colors["Ocean Deep"][2])]
         )
         # Notebook 本體底色
-        style.configure('TNotebook', background='#f5f7fa', borderwidth=0)
+        style.configure('TNotebook', background=them_colors["Ocean Deep"][4], borderwidth=0)
         # Frame 樣式
-        style.configure('TFrame', background='#f5f7fa')
+        style.configure('TFrame', background=them_colors["Ocean Deep"][4])
         # LabelFrame 樣式
-        style.configure('TLabelframe', background='#f5f7fa', font=('Microsoft JhengHei', 11, 'bold'))
-        style.configure('TLabelframe.Label', background='#1976d2', foreground='white', font=('Microsoft JhengHei', 11, 'bold'))
+        style.configure('TLabelframe', background=them_colors["Ocean Deep"][4], font=('Microsoft JhengHei', 11, 'bold'))
+        style.configure('TLabelframe.Label', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1], font=('Microsoft JhengHei', 11, 'bold'))
         # Button 樣式
-        style.configure('TButton', font=('Microsoft JhengHei', 11), padding=6)
-        # Entry 樣式
-        style.configure('TEntry', font=('Microsoft JhengHei', 11))
-        # Checkbutton 樣式（讓底色與 LabelFrame 一致）
-        style.configure('TCheckbutton', background='#f5f7fa', font=('Microsoft JhengHei', 11))
+        style.configure('TButton', font=('Microsoft JhengHei', 11), padding=6, background=them_colors["Ocean Deep"][0], foreground=them_colors["Ocean Deep"][4])
+        style.map('TButton', background=[('active', them_colors["Ocean Deep"][4])], foreground=[('active', them_colors["Ocean Deep"][4])])
+        # Entry 樣式（文字框底色加點藍灰色，提升可視性）
+        style.configure('TEntry', font=('Microsoft JhengHei', 11),
+                        fieldbackground='#263445', background='#263445', foreground=them_colors["Ocean Deep"][1],
+                        bordercolor=them_colors["Ocean Deep"][4], lightcolor=them_colors["Ocean Deep"][0], darkcolor=them_colors["Ocean Deep"][0])
+        # Checkbutton 樣式
+        style.configure('TCheckbutton', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1], font=('Microsoft JhengHei', 11))
         # Combobox 樣式
-        style.configure('TCombobox', font=('Microsoft JhengHei', 11))
-        # Label 樣式（讓 ttk.Label 也有白底）
-        style.configure('TLabel', background='#f5f7fa', font=('Microsoft JhengHei', 11))
-        # Entry 樣式（白底）
-        style.configure('TEntry', fieldbackground='white', background='white', foreground='#222')
-        # 讓 tk.Entry 也有白底
-        #self.root.option_add('*Entry.Background', 'white')
-        #self.root.option_add('*Entry.Foreground', '#222')
-        # --- END 美化介面 ---
+        style.configure('TCombobox', font=('Microsoft JhengHei', 11), fieldbackground=them_colors["Ocean Deep"][0], background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1])
+        # Label 樣式
+        style.configure('TLabel', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1], font=('Microsoft JhengHei', 11))
+        # tk.Entry 也套用同色
+        root.option_add('*Entry.Background', them_colors["Ocean Deep"][4])
+        root.option_add('*Entry.Foreground', them_colors["Ocean Deep"][4])
+        # Matplotlib Figure 底色
+        self.figure_facecolor = them_colors["Ocean Deep"][1]
+        self.figure_temp_color = them_colors["Ocean Deep"][0]
+        self.figure_power_color = them_colors["Ocean Deep"][0]
 
         self.font_prop = FontProperties(family="Microsoft JhengHei", size=10)
         self.root = root
@@ -555,7 +569,7 @@ class App:
  
         # 初始化 Notebook（頁面容器）
         self.notebook = ttk.Notebook(root)
-        self.notebook.place(x=5, y=5, width=self.ws-10, height=self.hs-10)
+        self.notebook.place(x=5, y=5, width=self.ws-5, height=self.hs-5)
         # 創建 6 個頁面（工位 1 到工位 6）
         self.frames = {}
         for i in range(1, 7):
@@ -670,20 +684,20 @@ class App:
             # File path selection
             ttk.Label(file_frame, text="儲存路徑:").grid(row=0, column=0, padx=5, pady=5)
             file_path_var = tk.StringVar(value="D:/測試紀錄")  # 設定預設路徑
-            file_path_entry = ttk.Entry(file_frame, textvariable=file_path_var, width=30)
+            file_path_entry = ttk.Entry(file_frame, textvariable=file_path_var, width=30, foreground="black")
             file_path_entry.grid(row=0, column=1, padx=5, pady=5)
             browse_button = ttk.Button(file_frame, text="Browse", command=lambda: self.browse_file(file_path_var))
             browse_button.grid(row=0, column=2, padx=5, pady=5)
 
             ttk.Label(file_frame, text="檔名:").grid(row=1, column=0, padx=5, pady=5)
             file_name_var = tk.StringVar(value="*.csv") 
-            file_name_entry = ttk.Entry(file_frame, textvariable=file_name_var, width=30, state="readonly")
+            file_name_entry = ttk.Entry(file_frame, textvariable=file_name_var, width=30, state="readonly", foreground="black")
             file_name_entry.grid(row=1, column=1, padx=5, pady=5)
 
             # Frequency selection
             ttk.Label(file_frame, text="記錄頻率(sec):").grid(row=2, column=0, padx=5, pady=5)
             frequency_var = tk.IntVar(value=10)
-            frequency_menu = ttk.Combobox(file_frame, textvariable=frequency_var, state="readonly")
+            frequency_menu = ttk.Combobox(file_frame, textvariable=frequency_var, state="readonly", foreground="black")
             frequency_menu['values'] = [10, 60, 180, 300]
             frequency_menu.grid(row=2, column=1, padx=5, pady=5)
 
@@ -705,15 +719,15 @@ class App:
             # 新增一個frame,設定冰箱規格
             ttk.Label(prod_frame, text="機種:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
             model_entry_var = tk.StringVar(value="NA")
-            model_entry = ttk.Entry(prod_frame, width=30, textvariable=model_entry_var)
+            model_entry = ttk.Entry(prod_frame, width=30, textvariable=model_entry_var, foreground="black")
             model_entry.grid(row=0, column=1, padx=5, pady=5)
             ttk.Label(prod_frame, text="冷凍庫容量(L):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
             vf_entry_var = tk.StringVar(value="150")
-            vf_entry = ttk.Entry(prod_frame, width=10, textvariable=vf_entry_var)
+            vf_entry = ttk.Entry(prod_frame, width=10, textvariable=vf_entry_var, foreground="black")
             vf_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
             ttk.Label(prod_frame, text="冷藏庫容量:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
             vr_entry_var = tk.StringVar(value="350")
-            vr_entry = ttk.Entry(prod_frame, width=10, textvariable=vr_entry_var)
+            vr_entry = ttk.Entry(prod_frame, width=10, textvariable=vr_entry_var, foreground="black")
             vr_entry.grid(row=2, column=1, padx=5, pady=5, sticky="w")
             # Fan type checkbox
             fan_type_var = tk.IntVar(value=1)  # 0: unchecked, 1: checked
@@ -747,7 +761,7 @@ class App:
                 ch_label.grid(row=row, column=col + 1, padx=5, pady=5)
 
                 # 別名輸入框
-                alias_entry = ttk.Entry(channel_frame, width=8)
+                alias_entry = ttk.Entry(channel_frame, width=8, foreground="black")
                 alias_entry.grid(row=row, column=col + 2, padx=2, sticky='ew')
                 ch_aliases.append(alias_entry)
 
@@ -1022,7 +1036,7 @@ class App:
         xbar_frame.grid(row=0, column=0, columnspan=2, padx=20, pady=5, sticky="nw")
         # X 軸範圍選擇
         x_axis_range_var = tk.StringVar(value="30min")
-        x_axis_range_menu = ttk.Combobox(xbar_frame, textvariable=x_axis_range_var, state="readonly", width=6)
+        x_axis_range_menu = ttk.Combobox(xbar_frame, textvariable=x_axis_range_var, state="readonly", width=6, foreground="black")
         x_axis_range_menu['values'] = ["30min", "3hrs", "12hrs", "24hrs"]
         x_axis_range_menu.grid(row=0, column=0, padx=1, pady=5)
         
@@ -1072,13 +1086,13 @@ class App:
         # calculate button
         calculate_button = ttk.Button(frame, text="平均", command=lambda: self.calculate_average(station_name), width=6)
         calculate_button.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
-        figure = Figure(figsize=(16, 8), dpi=80, facecolor='#f5f7fa')
+        figure = Figure(figsize=(16, 8), dpi=80, facecolor=self.figure_facecolor)
         gs = figure.add_gridspec(2, 1, height_ratios=[7, 3])  # 7:3 高度比例
         canvas = FigureCanvasTkAgg(figure, master=frame)
         canvas_widget = canvas.get_tk_widget()
         canvas_widget.grid(row=0, rowspan= 5, column=2, padx=5, pady=5)
-        ax_temp = figure.add_subplot(gs[0, 0], facecolor='lightcyan')
-        ax_power = figure.add_subplot(gs[1, 0], sharex=ax_temp, facecolor='lightyellow')
+        ax_temp = figure.add_subplot(gs[0, 0], facecolor=self.figure_temp_color)
+        ax_power = figure.add_subplot(gs[1, 0], sharex=ax_temp, facecolor=self.figure_power_color)
         # 減少左右空白
         figure.subplots_adjust(left=0.035, right=0.98, top=0.95, bottom=0.05, hspace=0.1)
 
@@ -1099,7 +1113,7 @@ class App:
         toolbar.update()
 
         # Memo text box
-        memo_text = tk.Text(frame, height=3, width=100, wrap="word")
+        memo_text = tk.Text(frame, height=3, width=100, wrap="word", foreground="black")
         memo_text.grid(row=5, column=2, padx=5, pady=5,sticky="e")
         memo_text.insert(tk.END, "備註:\n")
         
@@ -1396,23 +1410,22 @@ class App:
     def setup_snapshot_page(self, frame, station_name):
         """設置 REPORT 頁面的控件"""
         # 能耗計算用欄位
-        model_frame = tk.Frame(frame)  # 使用 Frame 包含文字框
+        model_frame = ttk.LabelFrame(frame, text="溫度設定")  # 使用 Frame 包含文字框
         model_frame.grid(row=0, column=0, padx=5, pady=10, sticky="w")
-        tk.Label(model_frame, text="溫度設定:").grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="w")
-        tk.Label(model_frame, text="F:").grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(model_frame, text="F:").grid(row=2, column=1, padx=5, pady=5, sticky="w")
         temp_f_entry_var = tk.StringVar(value="-18.0")
-        temp_f_entry = tk.Entry(model_frame, width=5, textvariable=temp_f_entry_var)
+        temp_f_entry = ttk.Entry(model_frame, width=5, textvariable=temp_f_entry_var, foreground="black")
         temp_f_entry.grid(row=2, column=2, padx=5, pady=5, sticky="w")
-        tk.Label(model_frame, text="R:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
+        ttk.Label(model_frame, text="R:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
         temp_r_entry_var = tk.StringVar(value="3.0")
-        temp_r_entry = tk.Entry(model_frame, width=5, textvariable=temp_r_entry_var)
+        temp_r_entry = ttk.Entry(model_frame, width=5, textvariable=temp_r_entry_var, foreground="black")
         temp_r_entry.grid(row=2, column=4, padx=5, pady=5, sticky="w")
         
-        tk.Button(frame, text="計算平均值", command=lambda: self.snapshot_report(station_name)).grid(row=0, column=1, pady=10)
-        tk.Button(frame, text="儲存結果", command=lambda: self.save_results(station_name)).grid(row=0, column=2, pady=10)
+        ttk.Button(frame, text="計算平均值", command=lambda: self.snapshot_report(station_name)).grid(row=0, column=1, pady=10)
+        ttk.Button(frame, text="儲存結果", command=lambda: self.save_results(station_name)).grid(row=0, column=2, pady=10)
 
 
-        report_text = tk.Text(frame, height=30, width=100, wrap="word")
+        report_text = tk.Text(frame, height=30, width=100, wrap="word", foreground="black")
         report_text.grid(row=1, column=0, columnspan=3, padx=5, pady=5)
         report_text.insert(tk.END, "NA\n")
         
