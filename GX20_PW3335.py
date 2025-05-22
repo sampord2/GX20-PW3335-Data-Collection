@@ -39,7 +39,7 @@ import tempfile
 plt.rcParams['font.family'] = 'Microsoft JhengHei'
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-Debug_mode = True  # 設定為 True 以啟用除錯模式
+Debug_mode = False  # 設定為 True 以啟用除錯模式
 
 # 確保 LOG 檔案儲存到執行檔所在目錄或臨時目錄
 if getattr(sys, 'frozen', False):  # 如果是 pyinstaller 打包的執行檔
@@ -498,24 +498,33 @@ class DraggableLine:
 
 class App:
     def __init__(self, root, ws, hs):
-        # --- 深色主題 Ocean Deep ---
+        # --- 主題顏色 ---
         them_colors = {
             "Ocean Deep": [
-                "#dfe1e5",  # 0: 米白
-                "#abbdd2",  # 1: 淺藍
-                "#4a7dbf",  # 2:
-                "#2e4876",  # 3: 
-                "#192938",  # 4: 
-                "#0d0d0d",  # 5: 深藍
-                "#141414"   # 6: 極深色
+                "#EAEFEF",  # 0: 白
+                "#EAEFEF",  # 1: 淺藍
+                "#B8CFCE",  # 2:
+                "#7F8CAA",  # 3: 
+                "#333446",  # 4: 
+                "#333446",  # 5: 深藍
+                "#333446"   # 6: 極深色
+            ],
+            "Serene Greens": [
+                "#f4faee",  # 0: 白
+                "#5a7939",  # 1: 淺綠
+                "#4c6d3b",  # 2:
+                "#395a2b",  # 3: 
+                "#2c4521",  # 4: 
+                "#293c16",  # 5: 深綠
+                "#1d2e17"   # 6: 極深色
             ]
         }
-        # 主背景
+# 主背景
         root.configure(bg=them_colors["Ocean Deep"][5])
         # Notebook 標籤樣式
         style = ttk.Style()
         style.configure('TNotebook.Tab', font=('Microsoft JhengHei', 13, 'bold'), padding=[16, 5],
-                        background=them_colors["Ocean Deep"][5], foreground=them_colors["Ocean Deep"][2], relief='flat')
+                        background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][2], relief='flat')
         style.map('TNotebook.Tab',
         background=[('selected', them_colors["Ocean Deep"][5]), ('active', them_colors["Ocean Deep"][4]), ('!selected', them_colors["Ocean Deep"][4])],
         foreground=[('selected', them_colors["Ocean Deep"][4]), ('active', them_colors["Ocean Deep"][3]), ('!selected', them_colors["Ocean Deep"][2])]
@@ -539,7 +548,7 @@ class App:
         # Combobox 樣式
         style.configure('TCombobox', font=('Microsoft JhengHei', 11), fieldbackground=them_colors["Ocean Deep"][0], background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1])
         # Label 樣式
-        style.configure('TLabel', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][1], font=('Microsoft JhengHei', 11))
+        style.configure('TLabel', background=them_colors["Ocean Deep"][4], foreground=them_colors["Ocean Deep"][0], font=('Microsoft JhengHei', 11))
         # tk.Entry 也套用同色
         root.option_add('*Entry.Background', them_colors["Ocean Deep"][4])
         root.option_add('*Entry.Foreground', them_colors["Ocean Deep"][4])
@@ -560,12 +569,9 @@ class App:
         self.collecting = {}
         self.plot_data = {}
         self.x_start = {}
-        #self.x_start = {datetime.now()}
         self.x_end = {}
-        #self.x_end = datetime.now() - timedelta(minutes=30)
-
         self.collection_threads = {}
-        self.stop_events = {}  # 新增：每個工位一個 stop event
+        self.stop_events = {}  # 每個工位一個 stop event
  
         # 初始化 Notebook（頁面容器）
         self.notebook = ttk.Notebook(root)
@@ -1206,10 +1212,10 @@ class App:
                 label = alias if alias else f"Ch{channel_num}"
                 line, = ax_temp.plot([data[0] for data in plot_data], temp_values, label=label)
                 artists.append(line)
-            # 只顯示啟用的頻道圖例
+            # 只顯示啟用的頻道圖例, 若沒設定alias則顯示頻道index
             if active_ch_list:
                 legend = ax_temp.legend(
-                    [alias if alias else f"Ch{channel_num}" for _, alias, channel_num in active_ch_list],
+                    [f"{index+1}:{alias}" if alias else f"ch{index+1}" for index, alias, _ in active_ch_list],
                     loc="upper left",
                     prop=self.font_prop)
                 artists.append(legend)
@@ -1231,6 +1237,8 @@ class App:
     def show_temp_at_datetime(self, station_name, dt):
         """根據 datetime 找出最接近的溫度資料，顯示在 channel_labels"""
         plot_data = self.plot_data.get(station_name, [])
+        start_date_entry = getattr(self, f"{station_name}_start_date_entry", None)
+        start_time_entry = getattr(self, f"{station_name}_start_time_entry", None)
         if not plot_data:
             return
         # 找到最接近 dt 的資料
@@ -1241,7 +1249,12 @@ class App:
             label = channel_labels.get(ch_num)
             if label:
                 label.config(text=f"{temps[i]:.1f}" if temps[i] is not None else "--")
-
+        # 更新開始時間與結束時間
+        if start_date_entry and start_time_entry:
+            start_date_entry.delete(0, tk.END)
+            start_date_entry.insert(0, dt.strftime('%Y-%m-%d'))
+            start_time_entry.delete(0, tk.END)
+            start_time_entry.insert(0, dt.strftime('%H:%M:%S'))
 
     def toggle_pause_plot(self, station_name):
         # 檢查 plot_data 是否有 10 筆以上，否則停止程序
