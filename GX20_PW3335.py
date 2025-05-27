@@ -303,7 +303,10 @@ class EnergyCalculator:
         monthly_consumption = round(daily_consumption * 30,1)
         
         # 9. 計算EF值 (能效因子)
-        ef_value = round(equivalent_volume / monthly_consumption,1)
+        if monthly_consumption == 0:
+            ef_value = 0.0
+        else:
+            ef_value = round(equivalent_volume / monthly_consumption,1)
         
         # 9.1 計算現有效率基準百分比和等級
         current_ef_thresholds = self.current_ef_thresholds(energy_allowance, fridge_type)
@@ -326,14 +329,14 @@ class EnergyCalculator:
             'VR(L)': VR,
             '等效內容積(L)': equivalent_volume,
             '冰箱型式': fridge_type,
-            '\r\n----能效相關計算結果----': '',
+            '\n----能效相關計算結果----': '',
             'EF值': ef_value,
             '實測月耗電量(kWh/月)': monthly_consumption,
             '2018年容許耗用能源基準(L/kWh/月)': energy_allowance,
             '2018年耗電量基準(kWh/月)': benchmark_consumption,
             '2018年效率等級': current_grade,
             '2018年一級效率百分比(%)': current_percent,
-            '\r\n----2027年新能效公式----': '',
+            '\n----2027年新能效公式----': '',
             '2027容許耗用能源基準(L/kWh/月)': future_energy_allowance,
             '2027年耗電量基準(kWh/月)': future_benchmark_consumption,
             '2027年效率等級': future_grade,
@@ -993,7 +996,10 @@ class App:
                         writer.writerow(header)
 
                     while self.collecting[station_name]:
-                        frequency_var = int(frequency_var)
+                        if Debug_mode:
+                            frequency_var = 1
+                        else:
+                            frequency_var = int(frequency_var)
                         active_ch_list = self.get_enabled_channel(station_name)
                         now = datetime.now()
                         # 將 99.9 轉為 None
@@ -1507,7 +1513,21 @@ class App:
             # 計算平均值
             # 只計算非 NaN 欄位的平均值，並過濾掉全部為 NaN 的欄位
             # 排除 '功率' 和 '累積功率' 欄位
-            temp_cols = [col for col in df.columns if col not in ['功率', '累積功率']]
+            # 取得溫度欄位（排除 '功率' 和 '累積功率'），若有 alias 則以 alias 命名，並將欄位名稱一併改為 alias
+            temp_cols = []
+            ch_aliases = getattr(self, f"{station_name}_ch_aliases", None)
+            rename_dict = {}
+            for i in range(20):
+                col_name = f"Ch{i+1}"
+                if col_name in df.columns and col_name not in ['功率', '累積功率']:
+                    if ch_aliases is not None and ch_aliases[i].get():
+                        alias = ch_aliases[i].get().strip()
+                        rename_dict[col_name] = alias
+                        temp_cols.append(alias)
+                    else:
+                        temp_cols.append(col_name)
+            if rename_dict:
+                df = df.rename(columns=rename_dict)
             avg_temp = df[temp_cols].loc[:, df[temp_cols].notna().any()].mean().round(1)
             avg_power = round(df["功率"].mean(), 1)
             #print(f"平均溫度: {avg_temp}")
@@ -1592,7 +1612,7 @@ class App:
                 #print(f"每日耗電量: {daily_consumption} kWh")
                 # 計算
                 results = ef.calculate(vf, vr, daily_consumption, temp_f, temp_r, fan_type)
-                print(f"能耗計算結果: {results}")
+                #print(f"能耗計算結果: {results}")
             else:
                 results = None
                 print("無耗電量數據,無法計算能耗")
@@ -1666,7 +1686,7 @@ if __name__ == "__main__":
         return os.path.join(base_path, relative_path)
     
     now = datetime.now()
-    AppTitle = "SAMPO RD2 Lab Data Collection 1_0"
+    AppTitle = "SAMPO RD2 Lab Data Collection"
     specific_date = datetime(2025, 12, 31)
     if now > specific_date:
         messagebox.showinfo("Info", AppTitle)
