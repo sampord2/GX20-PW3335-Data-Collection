@@ -326,16 +326,18 @@ class EnergyCalculator:
             'VR(L)': VR,
             '等效內容積(L)': equivalent_volume,
             '冰箱型式': fridge_type,
-            '容許耗用能源基準(L/kWh/月)': energy_allowance,
-            '2027容許耗用能源基準(L/kWh/月)': future_energy_allowance,
-            '耗電量基準(kWh/月)': benchmark_consumption,
-            '2027耗電量基準(kWh/月)': future_benchmark_consumption,
-            '實測月耗電量(kWh/月)': monthly_consumption,
+            '\r\n----能效相關計算結果----': '',
             'EF值': ef_value,
-            '現有效率基準百分比(%)': current_percent,
-            '現有效率等級': current_grade,
-            '2027新效率基準百分比(%)': future_percent,
-            '2027新效率等級': future_grade
+            '實測月耗電量(kWh/月)': monthly_consumption,
+            '2018年容許耗用能源基準(L/kWh/月)': energy_allowance,
+            '2018年耗電量基準(kWh/月)': benchmark_consumption,
+            '2018年效率等級': current_grade,
+            '2018年一級效率百分比(%)': current_percent,
+            '\r\n----2027年新能效公式----': '',
+            '2027容許耗用能源基準(L/kWh/月)': future_energy_allowance,
+            '2027年耗電量基準(kWh/月)': future_benchmark_consumption,
+            '2027年效率等級': future_grade,
+            '2027年一級效率百分比(%)': future_percent
         })
         
         return results
@@ -411,16 +413,16 @@ class EnergyCalculator:
             final_percent = round(ef_value / thresholds[0] * 100, 1)
         elif ef_value >= thresholds[1]:
             grade = "2級"
-            final_percent = round(ef_value / thresholds[1] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         elif ef_value >= thresholds[2]:
             grade = "3級"
-            final_percent = round(ef_value / thresholds[2] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         elif ef_value >= thresholds[3]:
             grade = "4級"
-            final_percent = round(ef_value / thresholds[3] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         else :
             grade = "5級"
-            final_percent = round(ef_value / thresholds[3] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         
         return final_percent, grade
     
@@ -434,16 +436,16 @@ class EnergyCalculator:
             final_percent = round(ef_value / thresholds[0] * 100, 1)
         elif ef_value >= thresholds[1]:
             grade = "2級"
-            final_percent = round(ef_value / thresholds[1] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         elif ef_value >= thresholds[2]:
             grade = "3級"
-            final_percent = round(ef_value / thresholds[2] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         elif ef_value >= thresholds[3]:
             grade = "4級"
-            final_percent = round(ef_value / thresholds[3] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         else :
             grade = "5級"
-            final_percent = round(ef_value / thresholds[3] * 100, 1)
+            final_percent = round(ef_value / thresholds[0] * 100, 1)
         
         return final_percent, grade
 
@@ -1043,7 +1045,7 @@ class App:
         # X 軸範圍選擇
         x_axis_range_var = tk.StringVar(value="30min")
         x_axis_range_menu = ttk.Combobox(xbar_frame, textvariable=x_axis_range_var, state="readonly", width=6, foreground="black")
-        x_axis_range_menu['values'] = ["30min", "3hrs", "12hrs", "24hrs"]
+        x_axis_range_menu['values'] = ["30min", "3hrs", "12hrs", "24hrs", "ALL"]
         x_axis_range_menu.grid(row=0, column=0, padx=1, pady=5)
         
         # Pause/Resume button
@@ -1188,6 +1190,8 @@ class App:
                 time_delta = pd.Timedelta(hours=12)
             elif x_axis_range == "24hrs":
                 time_delta = pd.Timedelta(hours=24)
+            elif x_axis_range == "ALL":
+                time_delta = pd.Timedelta(plot_data[-1][0] - plot_data[0][0])
             else:
                 time_delta = pd.Timedelta(minutes=30)
 
