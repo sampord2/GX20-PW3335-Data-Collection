@@ -278,7 +278,7 @@ class EnergyCalculator:
         results = {}
         
         # 1. 計算K值 (溫度係數)
-        print(f"冷凍室溫度: {freezer_temp}, 冷藏室溫度: {fridge_temp}")
+        #print(f"冷凍室溫度: {freezer_temp}, 冷藏室溫度: {fridge_temp}")
         K = self.calculate_K_value(freezer_temp, fridge_temp)
         #print(f"K值: {K}")
         # 2. 計算等效內容積
@@ -1062,7 +1062,8 @@ class App:
         # 頻道框架
         channel_frame = ttk.LabelFrame(frame, text="溫度")
         channel_frame.grid(row=1, column=0, columnspan=2, padx=20, pady=5, sticky="nw")
-        channel_labels = {}  # 新增：儲存當前工位的頻道標籤
+        channel_labels = {}  # 儲存當前工位的頻道標籤
+        temp_alias_label = []  # 儲存頻道別名標籤
         for i in range(20):
             # 計算行(row)與列(column)位置
             if i < 10:
@@ -1073,8 +1074,9 @@ class App:
                 col = 3  # 第二列從第4欄開始（0,1,2,3...）
             instant_temp_label = ttk.Label(channel_frame, text=i+1, width=6, relief="solid", anchor="center")
             instant_temp_label.grid(row=row, column=col, padx=5, pady=5)
-            cal_temp_label = ttk.Label(channel_frame, text=i+1, width=3, anchor="center")
-            cal_temp_label.grid(row=row, column=col+1, padx=5, pady=5)
+            channel_alias_label = ttk.Label(channel_frame, text=i+1, width=3, anchor="center")
+            channel_alias_label.grid(row=row, column=col+1, padx=5, pady=5)
+            temp_alias_label.append(channel_alias_label)
             # 用 channel number 當 key
             channel_num = self.gx20_instance.channel_number[station_name][i]
             channel_labels[channel_num] = instant_temp_label
@@ -1133,7 +1135,7 @@ class App:
         
         # Save references
         setattr(self, f"{station_name}_channel_labels", channel_labels)  # 儲存頻道標籤
-
+        setattr(self, f"{station_name}_channel_alias_label", temp_alias_label)  # 儲存頻道別名標籤
         setattr(self, f"{station_name}_figure", figure)
         setattr(self, f"{station_name}_canvas", canvas)
         setattr(self, f"{station_name}_ax_temp", ax_temp)
@@ -1179,7 +1181,21 @@ class App:
         # 取得 active_ch_list
         if active_ch_list is None:
             active_ch_list = self.get_enabled_channel(station_name)
-         
+        # --- 新增：同步更新 plot 頁面的 channel_alias_label ---
+        channel_alias_label = getattr(self, f"{station_name}_channel_alias_label", None)
+        ch_aliases = getattr(self, f"{station_name}_ch_aliases", None)
+        # 取得參數頁的 ch_label
+        channel_check = getattr(self, f"{station_name}_channel_check", None)
+        if channel_alias_label and ch_aliases and channel_check:
+            for i in range(20):
+                # 1. 先複製參數頁 ch_label 的標籤名稱
+                label_text = f"{i+1}"
+                # 2. 若 alias_entry 有值, 以 alias_entry 的內容取代
+                if ch_aliases[i].get():
+                    label_text = ch_aliases[i].get()
+                channel_alias_label[i].config(text=label_text)
+
+
         # 更新圖表
         if figure and ax_temp and ax_power and not self.pause_plot[station_name]:
             # 清除舊數據
@@ -1225,7 +1241,7 @@ class App:
             # 只顯示啟用的頻道圖例, 若沒設定alias則顯示頻道index
             if active_ch_list:
                 legend = ax_temp.legend(
-                    [f"{index+1}:{alias}" if alias else f"ch{index+1}" for index, alias, _ in active_ch_list],
+                    [f"{alias}" if alias else f"{index+1}" for index, alias, _ in active_ch_list],
                     loc="upper left",
                     prop=self.font_prop)
                 artists.append(legend)
@@ -1268,8 +1284,8 @@ class App:
 
     def toggle_pause_plot(self, station_name):
         # 檢查 plot_data 是否有 10 筆以上，否則停止程序
-        if len(self.plot_data.get(station_name, [])) < 10:
-            self.show_error_dialog("資料不足", "資料筆數不足 10 筆，無法暫停/分析。")
+        if len(self.plot_data.get(station_name, [])) < 2:
+            self.show_error_dialog("資料不足", "資料筆數不足，無法暫停/分析。")
             return
         # 切換暫停/繼續圖表更新，暫停時於X軸起訖加axvline，繼續時隱藏，並可拖曳vline
         pause_button = getattr(self, f"{station_name}_pause_button", None)
@@ -1510,25 +1526,16 @@ class App:
             # 計算 start 和 end 之間的分鐘數
             time_diff = round((end_datetime - start_datetime).total_seconds() / 60, 1)
             #print(f"時間差: {time_diff} 分鐘")
-            # 計算平均值
-            # 只計算非 NaN 欄位的平均值，並過濾掉全部為 NaN 的欄位
-            # 排除 '功率' 和 '累積功率' 欄位
-            # 取得溫度欄位（排除 '功率' 和 '累積功率'），若有 alias 則以 alias 命名，並將欄位名稱一併改為 alias
-            temp_cols = []
-            ch_aliases = getattr(self, f"{station_name}_ch_aliases", None)
-            rename_dict = {}
+            # 取temps計算平均值avg_temp
+            from typing import Optional
+            avg_temp: list[Optional[float]] = [None] * 20
             for i in range(20):
-                col_name = f"Ch{i+1}"
-                if col_name in df.columns and col_name not in ['功率', '累積功率']:
-                    if ch_aliases is not None and ch_aliases[i].get():
-                        alias = ch_aliases[i].get().strip()
-                        rename_dict[col_name] = alias
-                        temp_cols.append(alias)
-                    else:
-                        temp_cols.append(col_name)
-            if rename_dict:
-                df = df.rename(columns=rename_dict)
-            avg_temp = df[temp_cols].loc[:, df[temp_cols].notna().any()].mean().round(1)
+                temp_column = f"Ch{i+1}"
+                if temp_column in df.columns:
+                    avg = round(df[temp_column].mean(), 1) if not df[temp_column].isnull().all() else None
+                    avg_temp[i] = avg
+            #print(f"平均溫度: {avg_temp}")
+
             avg_power = round(df["功率"].mean(), 1)
             #print(f"平均溫度: {avg_temp}")
             #print(f"平均功率: {avg_power}")
@@ -1622,10 +1629,15 @@ class App:
             if report_text is not None:
                 report_text.delete(1.0, tk.END)  # 清空文字框
                 report_text.insert(tk.END, f"統計範圍：{start_datetime} ~ {end_datetime}\n")
-                # 整理 avg_temp，移除 dtype 行
-                avg_temp_str = "\n".join([f"ch{idx+1}: {val}" for idx, val in enumerate(avg_temp.values)])
-                report_text.insert(tk.END, f"平均溫度:\n{avg_temp_str}\n")
-                report_text.insert(tk.END, f"平均功率: {avg_power:.2f} W\n")
+                report_text.insert(tk.END, f"筆數: {len(df)}\n")
+                report_text.insert(tk.END, f"時間: {time_diff} 分鐘\n")
+                report_text.insert(tk.END, f"平均溫度:\n")
+                for i in range(20):
+                    if avg_temp[i] is not None:
+                        report_text.insert(tk.END, f"Ch{i+1}: {avg_temp[i]:.1f}\n")
+                    else:
+                        report_text.insert(tk.END, f"Ch{i+1}: --\n")
+                report_text.insert(tk.END, f"平均功率: {avg_power} W\n")
                 report_text.insert(tk.END, f"\nON / Off 周期次數：{power_cycles}\n")
                 report_text.insert(tk.END, f"On 的平均時間: {above_avg_time:.1f} 分\n" if above_count > 0 else "P(W) >= 3 的平均時間: 無資料\n")
                 report_text.insert(tk.END, f"Off 的平均時間: {below_avg_time:.1f} 分\n" if below_count > 0 else "P(W) < 3 的平均時間: 無資料\n")
@@ -1638,12 +1650,8 @@ class App:
                         report_text.insert(tk.END, f"{key}: {value}\n")
                 else:
                     report_text.insert(tk.END, "無法計算能耗，請檢查數據\n")
-
-
-
         except Exception as e:
-            print(f"Error in snapshot_report: {e}")
-            log_error(f"Error in snapshot_report: {e}")
+            self.show_error_dialog("錯誤", f"生成報告時發生錯誤: {e}")
             return
 
     def save_results(self, station_name):
