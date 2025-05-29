@@ -334,11 +334,13 @@ class EnergyCalculator:
             '實測月耗電量(kWh/月)': monthly_consumption,
             '2018年容許耗用能源基準(L/kWh/月)': energy_allowance,
             '2018年耗電量基準(kWh/月)': benchmark_consumption,
+            '2018年一級效率EF值': current_ef_thresholds[0],
             '2018年效率等級': current_grade,
             '2018年一級效率百分比(%)': current_percent,
             '\n----2027年新能效公式----': '',
             '2027容許耗用能源基準(L/kWh/月)': future_energy_allowance,
             '2027年耗電量基準(kWh/月)': future_benchmark_consumption,
+            '2027年一級效率EF值': future_ef_thresholds[0],
             '2027年效率等級': future_grade,
             '2027年一級效率百分比(%)': future_percent
         })
