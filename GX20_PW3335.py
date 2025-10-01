@@ -12,6 +12,8 @@
 #         4. 儲存數據到CSV檔案
 #         5. 支援多工位數據收集,計算等功能
 #         6. 可設定Debug模式下,離線以模擬數據操作
+#Rev 2025/9/2 : 1.新增計算on/off比例的門檻設定
+#Rev 2025/10/1: 變更2027能耗公式,型式以有效內容積判定
 #-------------------------------------------------------------------------------
 import socket
 import time
@@ -103,7 +105,8 @@ class GX20:
                 base, exp = value_str.split('E')
                 value = float(base) * (10 ** int(exp))
                     # 檢查值是否大於 999
-                return None if value > 999 else value
+                    # 25/07/02 檢查是否小於 -40
+                return None if (value > 999 or value < -40) else value
             
         except (ValueError, TypeError):
             return None
@@ -282,16 +285,21 @@ class EnergyCalculator:
         K = self.calculate_K_value(freezer_temp, fridge_temp)
         #print(f"K值: {K}")
         # 2. 計算等效內容積
+        # 25/10/01 新增有效內容積 = VR + VF
         equivalent_volume = self.calculate_equivalent_volume(VR, VF, K)
+        effective_volume = VR + VF
         
         # 3. 確定冰箱型式
-        fridge_type = self.determine_fridge_type(equivalent_volume, VR, VF, fan_type)
+        # 25/10/01 2027新能耗改用有效內容積來判斷冰箱型式
+        fridge_type_equivalent = self.determine_fridge_type(equivalent_volume, VR, VF, fan_type)
+        fridge_type_effective = self.determine_fridge_type(effective_volume, VR, VF, fan_type)
         #print(f"冰箱型式: {fridge_type}")
+
         # 4. 計算容許耗用能源基準 (每月)
-        energy_allowance = self.calculate_energy_allowance(equivalent_volume, fridge_type)
+        energy_allowance = self.calculate_energy_allowance(equivalent_volume, fridge_type_equivalent)
         
         # 5. 計算2027容許耗用能源基準
-        future_energy_allowance = self.calculate_future_energy_allowance(equivalent_volume, fridge_type)
+        future_energy_allowance = self.calculate_future_energy_allowance(equivalent_volume, fridge_type_effective)
         
         # 6. 計算耗電量基準 (每月)
         benchmark_consumption = self.calculate_benchmark_consumption(equivalent_volume, energy_allowance)
@@ -300,7 +308,7 @@ class EnergyCalculator:
         future_benchmark_consumption = self.calculate_future_benchmark_consumption(equivalent_volume, future_energy_allowance)
         
         # 8. 計算實測月耗電量
-        monthly_consumption = round(daily_consumption * 30,1)
+        monthly_consumption = round(daily_consumption * 30, 1)
         
         # 9. 計算EF值 (能效因子)
         if monthly_consumption == 0:
@@ -309,13 +317,13 @@ class EnergyCalculator:
             ef_value = round(equivalent_volume / monthly_consumption,1)
         
         # 9.1 計算現有效率基準百分比和等級
-        current_ef_thresholds = self.current_ef_thresholds(energy_allowance, fridge_type)
+        current_ef_thresholds = self.current_ef_thresholds(energy_allowance, fridge_type_equivalent)
 
         # 10. 計算現有效率基準百分比和等級
         current_percent, current_grade = self.calculate_current_efficiency(ef_value, current_ef_thresholds)
         
         # 10.1 計算2027新效率基準百分比和等級
-        future_ef_thresholds = self.future_ef_thresholds(future_energy_allowance, fridge_type)
+        future_ef_thresholds = self.future_ef_thresholds(future_energy_allowance, fridge_type_effective)
 
         # 11. 計算2027新效率基準百分比和等級
         future_percent, future_grade = self.calculate_future_efficiency(ef_value, future_ef_thresholds)
@@ -327,8 +335,10 @@ class EnergyCalculator:
             'K值': K,
             'VF(L)': VF,
             'VR(L)': VR,
+            '有效內容積(L)': effective_volume,
             '等效內容積(L)': equivalent_volume,
-            '冰箱型式': fridge_type,
+            '冰箱型式(等效內容積)': fridge_type_equivalent,
+            '冰箱型式(有效內容積)': fridge_type_effective,
             '\n----能效相關計算結果----': '',
             'EF值': ef_value,
             '實測月耗電量(kWh/月)': monthly_consumption,
@@ -359,15 +369,15 @@ class EnergyCalculator:
         """計算等效內容積"""
         return round(VR + (K * VF), 1)
     
-    def determine_fridge_type(self, equivalent_volume, VR, VF, fan_type):
+    def determine_fridge_type(self, volume, VR, VF, fan_type):
         """確定冰箱型式"""
         if VF == 0:  # 只有冷藏室
             return 5
-        elif equivalent_volume < 400 and fan_type == 1:
+        elif volume < 400 and fan_type == 1:
             return 1  # 假設是風冷式(實際應根據具體設計)
-        elif equivalent_volume >= 400 and fan_type == 1:
+        elif volume >= 400 and fan_type == 1:
             return 2
-        elif equivalent_volume < 400 and fan_type == 0:
+        elif volume < 400 and fan_type == 0:
             return 3
         else:
             return 4  # 假設是風冷式(實際應根據具體設計)
@@ -748,6 +758,12 @@ class App:
             fan_type_var = tk.IntVar(value=1)  # 0: unchecked, 1: checked
             fan_type_checkbox = ttk.Checkbutton(prod_frame, text="風扇式", variable=fan_type_var)
             fan_type_checkbox.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+            # 壓縮機ON_OFF判斷門檻
+            ttk.Label(prod_frame, text="OnOff門檻:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+            onoffthrottle_entry_var = tk.StringVar(value="5")  # 預設值為5
+            # 2025/9/2 新增計算on/off比例的門檻設定
+            onoffthrottle_entry = ttk.Entry(prod_frame, width=10, textvariable=onoffthrottle_entry_var, foreground="black")
+            onoffthrottle_entry.grid(row=4, column=1, padx=5, pady=5, sticky="w")
 
 
         # 頻道框架
@@ -801,6 +817,7 @@ class App:
         setattr(self, f"{station_name}_vr_entry_var", vr_entry_var)
         setattr(self, f"{station_name}_fan_type_var", fan_type_var)
         setattr(self, f"{station_name}_fan_type_checkbox", fan_type_checkbox)
+        setattr(self, f"{station_name}_onoffthrottle_entry", onoffthrottle_entry_var) #2025/9/2 新增計算on/off比例的門檻設定
         setattr(self, f"{station_name}_channel_check", channel_check)
         setattr(self, f"{station_name}_ch_aliases", ch_aliases)
 
@@ -1011,7 +1028,6 @@ class App:
                             None if v == 999.9 else v
                             for v in self.gx20_data_dict[station_name]
                         ]
-
                         if not Debug_mode:
                             power_data = [None] * 4
                             try:
@@ -1019,17 +1035,15 @@ class App:
                                 #print(f"{station_name}即時電力: {power_data}")
                             except Exception as e:
                                 log_error(f"collect_data.pw.query_data()發生錯誤: {e} at {pw_ip}")
+                                power_data = [110.0,1,50,1.1]
                         else:
                             # 模擬電力數據
                             power_data = [110.0,1,50,1.1]
-
 
                         self.plot_data[station_name].append([now, temp_data, power_data])
                         #print(f"{station_name}最新數據: {self.plot_data[station_name][-1]}")
                         self.update_plot(None, station_name, active_ch_list)
                         
- 
-
                         date_str = now.strftime("%Y-%m-%d")
                         time_str = now.strftime("%H:%M:%S")
                         # 寫入csv的內容由self.gx20_data_dict[station_name]改為temp_data, 頻道內數據為99.9的位置,改為空值
@@ -1484,6 +1498,7 @@ class App:
         start_time = getattr(self, f"{station_name}_start_time_entry", None)
         end_date = getattr(self, f"{station_name}_end_date_entry", None)
         end_time = getattr(self, f"{station_name}_end_time_entry", None)
+        onoffthrottle = getattr(self, f"{station_name}_onoffthrottle_entry", None)
         # 檢查日期和時間格式
         try:
             start_date = start_date.get() if start_date else ""
@@ -1492,6 +1507,7 @@ class App:
             end_time = end_time.get() if end_time else ""
             start_datetime = pd.to_datetime(f"{start_date} {start_time}")
             end_datetime = pd.to_datetime(f"{end_date} {end_time}")
+            onoffthrottle = int(onoffthrottle.get()) if onoffthrottle else 0 #2025/9/2 新增計算on/off比例的門檻設定
             if start_datetime >= end_datetime:
                 raise ValueError("結束時間必須晚於開始時間")
         except ValueError as e:
@@ -1543,14 +1559,14 @@ class App:
             avg_power = round(df["功率"].mean(), 1)
             #print(f"平均溫度: {avg_temp}")
             #print(f"平均功率: {avg_power}")
-             # 計算電力啟停周期,大於 1W才算啟動
+             # 計算電力啟停周期,大於 3W才算啟動
             power_column = '功率'
             if power_column in df.columns:
                 # 確保正確建立 power_on 欄位
-                df.loc[:, 'power_on'] = df[power_column] >= 3
+                df.loc[:, 'power_on'] = df[power_column] >= onoffthrottle #2025/9/2 新增計算on/off比例的門檻設定
                 # 計算啟停周期次數
                 power_cycles = int(df['power_on'].astype(int).diff().fillna(0).abs().sum() // 2)
-                # 計算大於等於3W和小於3W的週期數，排除頭尾兩個周期
+                # 計算大於等於onoffthrottle和小於onoffthrottle的週期數，排除頭尾兩個周期
                 mask = df['power_on']
                 groups = (mask != mask.shift()).cumsum()
                 segments = pd.DataFrame({
@@ -1566,7 +1582,7 @@ class App:
                 # 計算每個區段的持續時間
                 segments['持續時間'] = (segments[('時間', 'max')] - segments[('時間', 'min')]).dt.total_seconds()
 
-                # 分別計算大於等於3W和小於3W的週期數與平均時間
+                # 分別計算大於等於,以及小於onoffthrottle的週期數與平均時間
                 above_segments = segments[segments['狀態']]
                 below_segments = segments[~segments['狀態']]
 
@@ -1643,8 +1659,9 @@ class App:
                         report_text.insert(tk.END, f"Ch{i+1}: --\n")
                 report_text.insert(tk.END, f"平均功率: {avg_power} W\n")
                 report_text.insert(tk.END, f"\nON / Off 周期次數：{power_cycles}\n")
-                report_text.insert(tk.END, f"On 的平均時間: {above_avg_time:.1f} 分\n" if above_count > 0 else "P(W) >= 3 的平均時間: 無資料\n")
-                report_text.insert(tk.END, f"Off 的平均時間: {below_avg_time:.1f} 分\n" if below_count > 0 else "P(W) < 3 的平均時間: 無資料\n")
+                report_text.insert(tk.END, f"壓縮機判定關閉門檻：{onoffthrottle}\n") #2025/9/2 新增計算on/off比例的門檻設定
+                report_text.insert(tk.END, f"On 的平均時間: {above_avg_time:.1f} 分\n" if above_count > 0 else "On 的平均時間: 無資料\n")
+                report_text.insert(tk.END, f"Off 的平均時間: {below_avg_time:.1f} 分\n" if below_count > 0 else "Off 的平均時間: 無資料\n")
                 report_text.insert(tk.END, f"On / Off 百分比: {above_percentage:.2f}%\n")
                 report_text.insert(tk.END, f"\n電力消耗：{wp_difference:.2f} w / {time_diff} 分\n")
                 report_text.insert(tk.END, f"24 小時電力消耗：{wp_24h_difference:.1f} w\n")
